@@ -13,7 +13,6 @@
  */
 package com.facebook.presto.orc;
 
-import com.facebook.presto.memory.context.AggregatedMemoryContext;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.metadata.MetadataReader;
 import com.facebook.presto.orc.metadata.OrcType;
@@ -24,7 +23,9 @@ import com.facebook.presto.orc.metadata.statistics.StripeStatistics;
 import com.facebook.presto.orc.reader.StreamReader;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.Subfield;
 import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.type.FixedWidthType;
 import com.facebook.presto.spi.type.Type;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Predicate;
@@ -47,6 +48,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -84,7 +86,7 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
     private final List<StripeInformation> stripes;
     private final StripeReader stripeReader;
     private int currentStripe = -1;
-    private AggregatedMemoryContext currentStripeSystemMemoryContext;
+    private OrcAggregatedMemoryContext currentStripeSystemMemoryContext;
 
     private final long fileRowCount;
     private final List<Long> stripeFilePositions;
@@ -100,7 +102,7 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
 
     private final Map<String, Slice> userMetadata;
 
-    private final AggregatedMemoryContext systemMemoryUsage;
+    private final OrcAggregatedMemoryContext systemMemoryUsage;
 
     private final Optional<OrcWriteValidation> writeValidation;
     private final Optional<OrcWriteValidation.WriteChecksumBuilder> writeChecksumBuilder;
@@ -110,6 +112,7 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
 
     public AbstractOrcRecordReader(
             Map<Integer, Type> includedColumns,
+            Map<Integer, List<Subfield>> requiredSubfields,
             T[] streamReaders,
             OrcPredicate predicate,
             long numberOfRows,
@@ -129,10 +132,11 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
             DataSize tinyStripeThreshold,
             DataSize maxBlockSize,
             Map<String, Slice> userMetadata,
-            AggregatedMemoryContext systemMemoryUsage,
+            OrcAggregatedMemoryContext systemMemoryUsage,
             Optional<OrcWriteValidation> writeValidation,
             int initialBatchSize,
-            StripeMetadataSource stripeMetadataSource)
+            StripeMetadataSource stripeMetadataSource,
+            boolean cacheable)
     {
         requireNonNull(includedColumns, "includedColumns is null");
         requireNonNull(predicate, "predicate is null");
@@ -154,14 +158,12 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
 
         // reduce the included columns to the set that is also present
         ImmutableSet.Builder<Integer> presentColumns = ImmutableSet.builder();
-        ImmutableMap.Builder<Integer, Type> presentColumnsAndTypes = ImmutableMap.builder();
         OrcType root = types.get(0);
-        for (Map.Entry<Integer, Type> entry : includedColumns.entrySet()) {
+        for (int column : includedColumns.keySet()) {
             // an old file can have less columns since columns can be added
             // after the file was written
-            if (entry.getKey() >= 0 && entry.getKey() < root.getFieldCount()) {
-                presentColumns.add(entry.getKey());
-                presentColumnsAndTypes.put(entry.getKey(), entry.getValue());
+            if (column >= 0 && column < root.getFieldCount()) {
+                presentColumns.add(column);
             }
         }
         this.presentColumns = presentColumns.build();
@@ -214,19 +216,21 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
 
         this.userMetadata = ImmutableMap.copyOf(Maps.transformValues(userMetadata, Slices::copyOf));
 
-        this.currentStripeSystemMemoryContext = this.systemMemoryUsage.newAggregatedMemoryContext();
+        this.currentStripeSystemMemoryContext = this.systemMemoryUsage.newOrcAggregatedMemoryContext();
 
         stripeReader = new StripeReader(
                 orcDataSource,
                 decompressor,
                 types,
                 this.presentColumns,
+                requiredSubfields,
                 rowsInRowGroup,
                 predicate,
                 hiveWriterVersion,
                 metadataReader,
                 writeValidation,
-                stripeMetadataSource);
+                stripeMetadataSource,
+                cacheable);
 
         this.streamReaders = requireNonNull(streamReaders, "streamReaders is null");
         for (int columnId = 0; columnId < root.getFieldCount(); columnId++) {
@@ -237,7 +241,35 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
 
         maxBytesPerCell = new long[streamReaders.length];
 
-        nextBatchSize = initialBatchSize;
+        OptionalInt fixedWidthRowSize = getFixedWidthRowSize(this.presentColumns, includedColumns);
+        if (fixedWidthRowSize.isPresent()) {
+            if (fixedWidthRowSize.getAsInt() == 0) {
+                nextBatchSize = MAX_BATCH_SIZE;
+            }
+            else {
+                nextBatchSize = adjustMaxBatchSize(MAX_BATCH_SIZE, maxBlockBytes, fixedWidthRowSize.getAsInt());
+            }
+        }
+        else {
+            nextBatchSize = initialBatchSize;
+        }
+    }
+
+    private static OptionalInt getFixedWidthRowSize(Set<Integer> columns, Map<Integer, Type> columnTypes)
+    {
+        int totalFixedWidth = 0;
+        for (int column : columns) {
+            Type type = columnTypes.get(column);
+            if (type instanceof FixedWidthType) {
+                // add 1 byte for null flag
+                totalFixedWidth += ((FixedWidthType) type).getFixedSize() + 1;
+            }
+            else {
+                return OptionalInt.empty();
+            }
+        }
+
+        return OptionalInt.of(totalFixedWidth);
     }
 
     /**
@@ -255,7 +287,7 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
             if (maxBytesPerCell[columnIndex] < bytesPerCell) {
                 maxCombinedBytesPerRow = maxCombinedBytesPerRow - maxBytesPerCell[columnIndex] + bytesPerCell;
                 maxBytesPerCell[columnIndex] = bytesPerCell;
-                adjustMaxBatchSize(maxCombinedBytesPerRow);
+                maxBatchSize = adjustMaxBatchSize(maxBatchSize, maxBlockBytes, maxCombinedBytesPerRow);
             }
         }
     }
@@ -354,7 +386,7 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
                 }
             }
         }
-
+        rowGroups = null;
         if (writeChecksumBuilder.isPresent()) {
             OrcWriteValidation.WriteChecksum actualChecksum = writeChecksumBuilder.get().build();
             validateWrite(validation -> validation.getChecksum().getTotalRowCount() == actualChecksum.getTotalRowCount(), "Invalid row count");
@@ -409,7 +441,7 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
         RowGroup currentRowGroup = rowGroups.next();
         currentGroupRowCount = toIntExact(currentRowGroup.getRowCount());
         if (currentRowGroup.getMinAverageRowBytes() > 0) {
-            adjustMaxBatchSize(currentRowGroup.getMinAverageRowBytes());
+            maxBatchSize = adjustMaxBatchSize(maxBatchSize, maxBlockBytes, currentRowGroup.getMinAverageRowBytes());
         }
 
         currentPosition = currentStripePosition + currentRowGroup.getRowOffset();
@@ -426,6 +458,11 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
         return true;
     }
 
+    private static int adjustMaxBatchSize(int maxBatchSize, long maxBlockBytes, long averageRowBytes)
+    {
+        return toIntExact(min(maxBatchSize, max(1, maxBlockBytes / averageRowBytes)));
+    }
+
     protected int getNextRowInGroup()
     {
         return nextRowInGroup;
@@ -434,11 +471,6 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
     protected void batchRead(int batchSize)
     {
         nextRowInGroup += batchSize;
-    }
-
-    protected void adjustMaxBatchSize(long averageRowBytes)
-    {
-        maxBatchSize = toIntExact(min(maxBatchSize, max(1, maxBlockBytes / averageRowBytes)));
     }
 
     protected int prepareNextBatch()
@@ -477,7 +509,7 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
             throws IOException
     {
         currentStripeSystemMemoryContext.close();
-        currentStripeSystemMemoryContext = systemMemoryUsage.newAggregatedMemoryContext();
+        currentStripeSystemMemoryContext = systemMemoryUsage.newOrcAggregatedMemoryContext();
         rowGroups = ImmutableList.<RowGroup>of().iterator();
 
         if (currentStripe >= 0) {

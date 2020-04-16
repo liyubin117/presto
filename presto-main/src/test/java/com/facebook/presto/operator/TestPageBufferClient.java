@@ -19,11 +19,11 @@ import com.facebook.airlift.http.client.Response;
 import com.facebook.airlift.http.client.testing.TestingHttpClient;
 import com.facebook.airlift.http.client.testing.TestingResponse;
 import com.facebook.airlift.testing.TestingTicker;
-import com.facebook.presto.execution.buffer.PagesSerde;
-import com.facebook.presto.execution.buffer.SerializedPage;
 import com.facebook.presto.operator.PageBufferClient.ClientCallback;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.page.PagesSerde;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.collect.ImmutableListMultimap;
 import io.airlift.units.DataSize;
 import io.airlift.units.DataSize.Unit;
@@ -36,6 +36,7 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
@@ -106,6 +107,7 @@ public class TestPageBufferClient
                 new Duration(1, TimeUnit.MINUTES),
                 true,
                 location,
+                Optional.empty(),
                 callback,
                 scheduler,
                 pageBufferClientCallbackExecutor);
@@ -192,6 +194,7 @@ public class TestPageBufferClient
                 new Duration(1, TimeUnit.MINUTES),
                 true,
                 location,
+                Optional.empty(),
                 callback,
                 scheduler,
                 pageBufferClientCallbackExecutor);
@@ -233,6 +236,7 @@ public class TestPageBufferClient
                 new Duration(1, TimeUnit.MINUTES),
                 true,
                 location,
+                Optional.empty(),
                 callback,
                 scheduler,
                 pageBufferClientCallbackExecutor);
@@ -302,6 +306,7 @@ public class TestPageBufferClient
                 new Duration(1, TimeUnit.MINUTES),
                 true,
                 location,
+                Optional.empty(),
                 callback,
                 scheduler,
                 pageBufferClientCallbackExecutor);
@@ -357,6 +362,7 @@ public class TestPageBufferClient
                 new Duration(30, TimeUnit.SECONDS),
                 true,
                 location,
+                Optional.empty(),
                 callback,
                 scheduler,
                 ticker,

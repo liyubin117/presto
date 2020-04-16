@@ -14,20 +14,28 @@
 package com.facebook.presto.verifier.framework;
 
 import com.facebook.presto.jdbc.QueryStats;
+import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.spi.type.TypeSignature;
 import com.facebook.presto.sql.parser.ParsingOptions;
 import com.facebook.presto.sql.tree.Identifier;
 
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.stream.IntStream;
 
 import static com.facebook.presto.sql.parser.ParsingOptions.DecimalLiteralTreatment.AS_DOUBLE;
 import static com.google.common.base.Functions.identity;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 
 public class VerifierUtil
 {
-    private VerifierUtil()
-    {
-    }
+    private VerifierUtil() {}
 
     public static final ParsingOptions PARSING_OPTIONS = ParsingOptions.builder().setDecimalLiteralTreatment(AS_DOUBLE).build();
 
@@ -36,31 +44,83 @@ public class VerifierUtil
         return new Identifier(name, true);
     }
 
-    public static void runWithQueryStatsConsumer(Callable<QueryStats> callable, Consumer<QueryStats> queryStatsConsumer)
+    public static void runAndConsume(Callable<QueryStats> callable, Consumer<QueryStats> queryStatsConsumer)
     {
-        callWithQueryStatsConsumer(callable, identity(), queryStatsConsumer);
+        runAndConsume(callable, queryStatsConsumer, e -> {});
     }
 
-    public static <V> QueryResult<V> callWithQueryStatsConsumer(Callable<QueryResult<V>> callable, Consumer<QueryStats> queryStatsConsumer)
+    public static void runAndConsume(Callable<QueryStats> callable, Consumer<QueryStats> queryStatsConsumer, Consumer<QueryException> queryExceptionConsumer)
     {
-        return callWithQueryStatsConsumer(callable, QueryResult::getQueryStats, queryStatsConsumer);
+        callAndConsume(callable, identity(), queryStatsConsumer, queryExceptionConsumer);
     }
 
-    private static <V> V callWithQueryStatsConsumer(Callable<V> callable, Function<V, QueryStats> queryStatsTransformer, Consumer<QueryStats> queryStatsConsumer)
+    public static <V> QueryResult<V> callAndConsume(Callable<QueryResult<V>> callable, Consumer<QueryStats> queryStatsConsumer)
+    {
+        return callAndConsume(callable, QueryResult::getQueryStats, queryStatsConsumer, e -> {});
+    }
+
+    private static <V> V callAndConsume(
+            Callable<V> callable,
+            Function<V, QueryStats> queryStatsTransformer,
+            Consumer<QueryStats> queryStatsConsumer,
+            Consumer<QueryException> queryExceptionConsumer)
     {
         try {
             V result = callable.call();
             queryStatsConsumer.accept(queryStatsTransformer.apply(result));
             return result;
         }
-        catch (QueryException e) {
+        catch (PrestoQueryException e) {
             e.getQueryStats().ifPresent(queryStatsConsumer);
+            queryExceptionConsumer.accept(e);
             throw e;
+        }
+    }
+
+    public static List<String> getColumnNames(ResultSetMetaData metadata)
+    {
+        return callUnchecked(() ->
+                IntStream.rangeClosed(1, metadata.getColumnCount())
+                        .mapToObj(i -> callUnchecked(() -> metadata.getColumnName(i)))
+                        .collect(toImmutableList()));
+    }
+
+    public static Map<String, Integer> getColumnIndices(ResultSetMetaData metadata)
+    {
+        return callUnchecked(() ->
+                IntStream.rangeClosed(1, metadata.getColumnCount())
+                        .boxed()
+                        .collect(toImmutableMap(i -> callUnchecked(() -> metadata.getColumnName(i)), i -> i - 1)));
+    }
+
+    public static List<Type> getColumnTypes(TypeManager typeManager, ResultSetMetaData metadata)
+    {
+        return callUnchecked(() ->
+                IntStream.rangeClosed(1, metadata.getColumnCount())
+                        .mapToObj(i -> callUnchecked(() -> metadata.getColumnTypeName(i)))
+                        .map(TypeSignature::parseTypeSignature)
+                        .map(typeManager::getType)
+                        .collect(toImmutableList()));
+    }
+
+    private static <V> V callUnchecked(SqlExceptionCallable<V> callable)
+    {
+        try {
+            return callable.call();
+        }
+        catch (SQLException e) {
+            throw new RuntimeException(e);
         }
     }
 
     public interface Callable<V>
     {
         V call();
+    }
+
+    public interface SqlExceptionCallable<V>
+    {
+        V call()
+                throws SQLException;
     }
 }

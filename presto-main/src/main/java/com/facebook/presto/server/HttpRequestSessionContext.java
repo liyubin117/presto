@@ -111,7 +111,8 @@ public final class HttpRequestSessionContext
                 user,
                 Optional.ofNullable(servletRequest.getUserPrincipal()),
                 parseRoleHeaders(servletRequest),
-                parseExtraCredentials(servletRequest));
+                parseExtraCredentials(servletRequest),
+                ImmutableMap.of());
 
         source = servletRequest.getHeader(PRESTO_SOURCE);
         traceToken = Optional.ofNullable(trimEmptyToNull(servletRequest.getHeader(PRESTO_TRACE_TOKEN)));
@@ -418,6 +419,9 @@ public final class HttpRequestSessionContext
                         break;
                     case ResourceEstimates.PEAK_MEMORY:
                         builder.setPeakMemory(DataSize.valueOf(value));
+                        break;
+                    case ResourceEstimates.PEAK_TASK_MEMORY:
+                        builder.setPeakTaskMemory(DataSize.valueOf(value));
                         break;
                     default:
                         throw badRequest(format("Unsupported resource name %s", name));

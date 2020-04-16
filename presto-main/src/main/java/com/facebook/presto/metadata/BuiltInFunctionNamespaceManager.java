@@ -13,7 +13,6 @@
  */
 package com.facebook.presto.metadata;
 
-import com.facebook.presto.block.BlockSerdeUtil;
 import com.facebook.presto.operator.aggregation.ApproximateCountDistinctAggregation;
 import com.facebook.presto.operator.aggregation.ApproximateDoublePercentileAggregations;
 import com.facebook.presto.operator.aggregation.ApproximateDoublePercentileArrayAggregations;
@@ -28,6 +27,7 @@ import com.facebook.presto.operator.aggregation.BitwiseOrAggregation;
 import com.facebook.presto.operator.aggregation.BooleanAndAggregation;
 import com.facebook.presto.operator.aggregation.BooleanOrAggregation;
 import com.facebook.presto.operator.aggregation.CentralMomentsAggregation;
+import com.facebook.presto.operator.aggregation.ClassificationFallOutAggregation;
 import com.facebook.presto.operator.aggregation.ClassificationMissRateAggregation;
 import com.facebook.presto.operator.aggregation.ClassificationPrecisionAggregation;
 import com.facebook.presto.operator.aggregation.ClassificationRecallAggregation;
@@ -160,6 +160,7 @@ import com.facebook.presto.spi.CatalogSchemaName;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.BlockEncodingSerde;
+import com.facebook.presto.spi.block.BlockSerdeUtil;
 import com.facebook.presto.spi.function.AlterRoutineCharacteristics;
 import com.facebook.presto.spi.function.FunctionHandle;
 import com.facebook.presto.spi.function.FunctionMetadata;
@@ -204,6 +205,10 @@ import com.facebook.presto.type.TinyintOperators;
 import com.facebook.presto.type.UnknownOperators;
 import com.facebook.presto.type.VarbinaryOperators;
 import com.facebook.presto.type.VarcharOperators;
+import com.facebook.presto.type.khyperloglog.KHyperLogLogAggregationFunction;
+import com.facebook.presto.type.khyperloglog.KHyperLogLogFunctions;
+import com.facebook.presto.type.khyperloglog.KHyperLogLogOperators;
+import com.facebook.presto.type.khyperloglog.MergeKHyperLogLogAggregationFunction;
 import com.facebook.presto.type.setdigest.BuildSetDigestAggregation;
 import com.facebook.presto.type.setdigest.MergeSetDigestAggregation;
 import com.facebook.presto.type.setdigest.SetDigestFunctions;
@@ -481,6 +486,7 @@ public class BuiltInFunctionNamespaceManager
                 .aggregates(BitwiseOrAggregation.class)
                 .aggregates(BitwiseAndAggregation.class)
                 .aggregates(ClassificationMissRateAggregation.class)
+                .aggregates(ClassificationFallOutAggregation.class)
                 .aggregates(ClassificationPrecisionAggregation.class)
                 .aggregates(ClassificationRecallAggregation.class)
                 .aggregates(ClassificationThresholdsAggregation.class)
@@ -670,6 +676,10 @@ public class BuiltInFunctionNamespaceManager
                 .aggregate(BuildSetDigestAggregation.class)
                 .scalars(SetDigestFunctions.class)
                 .scalars(SetDigestOperators.class)
+                .aggregates(MergeKHyperLogLogAggregationFunction.class)
+                .aggregates(KHyperLogLogAggregationFunction.class)
+                .scalars(KHyperLogLogFunctions.class)
+                .scalars(KHyperLogLogOperators.class)
                 .scalars(WilsonInterval.class)
                 .scalars(TDigestOperators.class)
                 .scalars(TDigestFunctions.class)

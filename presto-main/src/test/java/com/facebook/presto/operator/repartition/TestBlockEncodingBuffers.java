@@ -69,10 +69,10 @@ import static com.facebook.presto.block.BlockAssertions.createRandomSmallintsBlo
 import static com.facebook.presto.block.BlockAssertions.createRandomStringBlock;
 import static com.facebook.presto.block.BlockAssertions.createRleBlockWithRandomValue;
 import static com.facebook.presto.block.BlockAssertions.wrapBlock;
-import static com.facebook.presto.block.BlockSerdeUtil.readBlock;
 import static com.facebook.presto.operator.repartition.AbstractBlockEncodingBuffer.createBlockEncodingBuffers;
 import static com.facebook.presto.operator.repartition.OptimizedPartitionedOutputOperator.decodeBlock;
 import static com.facebook.presto.spi.block.ArrayBlock.fromElementBlock;
+import static com.facebook.presto.spi.block.BlockSerdeUtil.readBlock;
 import static com.facebook.presto.spi.block.MapBlock.fromKeyValueBlock;
 import static com.facebook.presto.spi.block.MethodHandleUtil.compose;
 import static com.facebook.presto.spi.block.MethodHandleUtil.nativeValueGetter;
@@ -327,7 +327,7 @@ public class TestBlockEncodingBuffers
         BlockFlattener flattener = new BlockFlattener(new SimpleArrayAllocator());
         DecodedBlockNode decodedBlock = decodeBlock(flattener, blockLeaseCloser, block);
 
-        BlockEncodingBuffer buffers = createBlockEncodingBuffers(decodedBlock);
+        BlockEncodingBuffer buffers = createBlockEncodingBuffers(decodedBlock, new SimpleArrayAllocator(1000), false);
 
         int[] positions = IntStream.range(0, block.getPositionCount() / 2).toArray();
         copyPositions(decodedBlock, buffers, positions, expectedRowSizes);
@@ -355,7 +355,7 @@ public class TestBlockEncodingBuffers
 
     private static void copyPositions(DecodedBlockNode decodedBlock, BlockEncodingBuffer buffer, int[] positions, int[] expectedRowSizes)
     {
-        buffer.setupDecodedBlocksAndPositions(decodedBlock, positions, positions.length);
+        buffer.setupDecodedBlocksAndPositions(decodedBlock, positions, positions.length, (int) decodedBlock.getRetainedSizeInBytes(), decodedBlock.getEstimatedSerializedSizeInBytes());
 
         ((AbstractBlockEncodingBuffer) buffer).checkValidPositions();
 

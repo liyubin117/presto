@@ -25,6 +25,8 @@ import java.util.concurrent.TimeUnit;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.recordDefaults;
+import static com.facebook.presto.execution.TaskManagerConfig.TaskPriorityTracking.QUERY_FAIR;
+import static com.facebook.presto.execution.TaskManagerConfig.TaskPriorityTracking.TASK_FAIR;
 import static io.airlift.units.DataSize.Unit;
 
 public class TestTaskManagerConfig
@@ -40,6 +42,8 @@ public class TestTaskManagerConfig
                 .setInfoRefreshMaxWait(new Duration(0, TimeUnit.SECONDS))
                 .setPerOperatorCpuTimerEnabled(true)
                 .setTaskCpuTimerEnabled(true)
+                .setPerOperatorAllocationTrackingEnabled(true)
+                .setTaskAllocationTrackingEnabled(true)
                 .setMaxWorkerThreads(Runtime.getRuntime().availableProcessors() * 2)
                 .setMinDrivers(Runtime.getRuntime().availableProcessors() * 2 * 2)
                 .setMinDriversPerTask(3)
@@ -53,16 +57,19 @@ public class TestTaskManagerConfig
                 .setMaxLocalExchangeBufferSize(new DataSize(32, Unit.MEGABYTE))
                 .setSinkMaxBufferSize(new DataSize(32, Unit.MEGABYTE))
                 .setMaxPagePartitioningBufferSize(new DataSize(32, Unit.MEGABYTE))
+                .setMaxPagePartitioningBufferCount(1_000_000)
                 .setWriterCount(1)
                 .setPartitionedWriterCount(null)
                 .setTaskConcurrency(16)
                 .setHttpResponseThreads(100)
+                .setHttpTimeoutConcurrency(1)
                 .setHttpTimeoutThreads(3)
                 .setTaskNotificationThreads(5)
                 .setTaskYieldThreads(3)
                 .setLevelTimeMultiplier(new BigDecimal("2"))
                 .setStatisticsCpuTimerEnabled(true)
-                .setLegacyLifespanCompletionCondition(false));
+                .setLegacyLifespanCompletionCondition(false)
+                .setTaskPriorityTracking(TASK_FAIR));
     }
 
     @Test
@@ -76,6 +83,8 @@ public class TestTaskManagerConfig
                 .put("experimental.task.info-update-refresh-max-wait", "3s")
                 .put("task.per-operator-cpu-timer-enabled", "false")
                 .put("task.cpu-timer-enabled", "false")
+                .put("task.per-operator-allocation-tracking-enabled", "false")
+                .put("task.allocation-tracking-enabled", "false")
                 .put("task.max-index-memory", "512MB")
                 .put("task.share-index-loading", "true")
                 .put("task.max-partial-aggregation-memory", "32MB")
@@ -89,16 +98,19 @@ public class TestTaskManagerConfig
                 .put("task.client.timeout", "10s")
                 .put("sink.max-buffer-size", "42MB")
                 .put("driver.max-page-partitioning-buffer-size", "40MB")
+                .put("driver.max-page-partitioning-buffer-count", "1111")
                 .put("task.writer-count", "4")
                 .put("task.partitioned-writer-count", "8")
                 .put("task.concurrency", "8")
                 .put("task.http-response-threads", "4")
+                .put("task.http-timeout-concurrency", "2")
                 .put("task.http-timeout-threads", "10")
                 .put("task.task-notification-threads", "13")
                 .put("task.task-yield-threads", "8")
                 .put("task.level-time-multiplier", "2.1")
                 .put("task.statistics-cpu-timer-enabled", "false")
                 .put("task.legacy-lifespan-completion-condition", "true")
+                .put("task.task-priority-tracking", "QUERY_FAIR")
                 .build();
 
         TaskManagerConfig expected = new TaskManagerConfig()
@@ -109,6 +121,8 @@ public class TestTaskManagerConfig
                 .setInfoRefreshMaxWait(new Duration(3, TimeUnit.SECONDS))
                 .setPerOperatorCpuTimerEnabled(false)
                 .setTaskCpuTimerEnabled(false)
+                .setPerOperatorAllocationTrackingEnabled(false)
+                .setTaskAllocationTrackingEnabled(false)
                 .setMaxIndexMemoryUsage(new DataSize(512, Unit.MEGABYTE))
                 .setShareIndexLoading(true)
                 .setMaxPartialAggregationMemoryUsage(new DataSize(32, Unit.MEGABYTE))
@@ -122,16 +136,19 @@ public class TestTaskManagerConfig
                 .setClientTimeout(new Duration(10, TimeUnit.SECONDS))
                 .setSinkMaxBufferSize(new DataSize(42, Unit.MEGABYTE))
                 .setMaxPagePartitioningBufferSize(new DataSize(40, Unit.MEGABYTE))
+                .setMaxPagePartitioningBufferCount(1111)
                 .setWriterCount(4)
                 .setPartitionedWriterCount(8)
                 .setTaskConcurrency(8)
                 .setHttpResponseThreads(4)
+                .setHttpTimeoutConcurrency(2)
                 .setHttpTimeoutThreads(10)
                 .setTaskNotificationThreads(13)
                 .setTaskYieldThreads(8)
                 .setLevelTimeMultiplier(new BigDecimal("2.1"))
                 .setStatisticsCpuTimerEnabled(false)
-                .setLegacyLifespanCompletionCondition(true);
+                .setLegacyLifespanCompletionCondition(true)
+                .setTaskPriorityTracking(QUERY_FAIR);
 
         assertFullMapping(properties, expected);
     }

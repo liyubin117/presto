@@ -45,7 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcTester.HIVE_STORAGE_TIME_ZONE;
 import static com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode.BOTH;
@@ -220,7 +220,7 @@ public class TestStructBatchStreamReader
             throws IOException
     {
         OrcWriter writer = new OrcWriter(
-                new OutputStreamOrcDataSink(new FileOutputStream(tempFile.getFile())),
+                new OutputStreamDataSink(new FileOutputStream(tempFile.getFile())),
                 ImmutableList.of(STRUCT_COL_NAME),
                 ImmutableList.of(writerType),
                 ORC,
@@ -269,16 +269,23 @@ public class TestStructBatchStreamReader
                 ORC,
                 new StorageOrcFileTailSource(),
                 new StorageStripeMetadataSource(),
+                NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
                 new OrcReaderOptions(
                         dataSize,
                         dataSize,
                         dataSize,
-                        false));
+                        false),
+                false);
 
         Map<Integer, Type> includedColumns = new HashMap<>();
         includedColumns.put(0, readerType);
 
-        OrcBatchRecordReader recordReader = orcReader.createBatchRecordReader(includedColumns, OrcPredicate.TRUE, UTC, newSimpleAggregatedMemoryContext(), OrcReader.INITIAL_BATCH_SIZE);
+        OrcBatchRecordReader recordReader = orcReader.createBatchRecordReader(
+                includedColumns,
+                OrcPredicate.TRUE,
+                UTC,
+                new TestingHiveOrcAggregatedMemoryContext(),
+                OrcReader.INITIAL_BATCH_SIZE);
 
         recordReader.nextBatch();
         RowBlock block = (RowBlock) recordReader.readBlock(0);

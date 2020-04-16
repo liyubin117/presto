@@ -31,7 +31,6 @@ import com.facebook.presto.spi.connector.ConnectorOutputMetadata;
 import com.facebook.presto.spi.connector.ConnectorPartitioningHandle;
 import com.facebook.presto.spi.function.SqlFunction;
 import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.security.GrantInfo;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.Privilege;
@@ -100,18 +99,12 @@ public interface Metadata
     TableHandle getAlternativeTableHandle(Session session, TableHandle tableHandle, PartitioningHandle partitioningHandle);
 
     /**
-     * Experimental: if true, the engine will invoke pushdownFilter instead of getLayout.
-     *
-     * This interface can be replaced with a connector optimizer rule once the engine supports these (#12546).
+     * Experimental: if true, the engine will invoke getLayout otherwise, getLayout will not be called.
+     * If filter pushdown is required, use a ConnectorPlanOptimizer in the respective connector in order
+     * to push compute into it's TableScan.
      */
-    boolean isPushdownFilterSupported(Session session, TableHandle tableHandle);
-
-    /**
-     * Experimental: returns table layout that encapsulates the given filter.
-     *
-     * This interface can be replaced with a connector optimizer rule once the engine supports these (#12546).
-     */
-    PushdownFilterResult pushdownFilter(Session session, TableHandle tableHandle, RowExpression filter);
+    @Deprecated
+    boolean isLegacyGetLayoutSupported(Session session, TableHandle tableHandle);
 
     /**
      * Return a partitioning handle which the connector can transparently convert both {@code left} and {@code right} into.
@@ -232,6 +225,9 @@ public interface Metadata
 
     Optional<NewTableLayout> getNewTableLayout(Session session, String catalogName, ConnectorTableMetadata tableMetadata);
 
+    @Experimental
+    Optional<NewTableLayout> getPreferredShuffleLayoutForNewTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata);
+
     /**
      * Begin the atomic creation of a table with data.
      */
@@ -243,6 +239,9 @@ public interface Metadata
     Optional<ConnectorOutputMetadata> finishCreateTable(Session session, OutputTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics);
 
     Optional<NewTableLayout> getInsertLayout(Session session, TableHandle target);
+
+    @Experimental
+    Optional<NewTableLayout> getPreferredShuffleLayoutForInsert(Session session, TableHandle target);
 
     /**
      * Describes statistics that must be collected during a write.
@@ -342,7 +341,7 @@ public interface Metadata
     /**
      * Creates the specified view with the specified view definition.
      */
-    void createView(Session session, QualifiedObjectName viewName, String viewData, boolean replace);
+    void createView(Session session, String catalogName, ConnectorTableMetadata viewMetadata, String viewData, boolean replace);
 
     /**
      * Drops the specified view.

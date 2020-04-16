@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.facebook.presto</groupId>
         <artifactId>presto-root</artifactId>
-        <version>0.232-SNAPSHOT</version>
+        <version>0.235-SNAPSHOT</version>
     </parent>
 
     <artifactId>presto-pinot</artifactId>
@@ -22,7 +22,6 @@
         <dependency>
             <groupId>com.facebook.presto</groupId>
             <artifactId>presto-pinot-toolkit</artifactId>
-            <version>${project.version}</version>
         </dependency>
 
         <dependency>

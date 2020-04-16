@@ -17,6 +17,8 @@ import com.facebook.presto.jdbc.PrestoConnection;
 import com.facebook.presto.jdbc.PrestoStatement;
 import com.facebook.presto.jdbc.QueryStats;
 import com.facebook.presto.sql.tree.Statement;
+import com.facebook.presto.verifier.framework.ClusterConnectionException;
+import com.facebook.presto.verifier.framework.PrestoQueryException;
 import com.facebook.presto.verifier.framework.QueryConfiguration;
 import com.facebook.presto.verifier.framework.QueryException;
 import com.facebook.presto.verifier.framework.QueryResult;
@@ -40,8 +42,6 @@ import java.util.Optional;
 import java.util.function.Consumer;
 
 import static com.facebook.presto.sql.SqlFormatter.formatSql;
-import static com.facebook.presto.verifier.framework.QueryException.Type.CLUSTER_CONNECTION;
-import static com.facebook.presto.verifier.framework.QueryException.Type.PRESTO;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
@@ -79,12 +79,12 @@ public class JdbcPrestoAction
 
         this.networkRetry = new RetryDriver<>(
                 networkRetryConfig,
-                queryException -> queryException.getType() == CLUSTER_CONNECTION,
+                queryException -> queryException instanceof ClusterConnectionException && queryException.isRetryable(),
                 QueryException.class,
                 verificationContext::addException);
         this.prestoRetry = new RetryDriver<>(
                 prestoRetryConfig,
-                queryException -> queryException.getType() == PRESTO && queryException.isRetryable(),
+                queryException -> queryException instanceof PrestoQueryException && queryException.isRetryable(),
                 QueryException.class,
                 verificationContext::addException);
     }
@@ -92,74 +92,37 @@ public class JdbcPrestoAction
     @Override
     public QueryStats execute(Statement statement, QueryStage queryStage)
     {
-        return execute(statement, queryStage, Optional.empty()).getQueryStats();
+        return execute(statement, queryStage, new NoResultStatementExecutor<>());
     }
 
     @Override
     public <R> QueryResult<R> execute(Statement statement, QueryStage queryStage, ResultSetConverter<R> converter)
     {
-        return execute(statement, queryStage, Optional.of(converter));
+        return execute(statement, queryStage, new ResultConvertingStatementExecutor<>(converter));
     }
 
-    private <R> QueryResult<R> execute(Statement statement, QueryStage queryStage, Optional<ResultSetConverter<R>> converter)
+    private <T> T execute(Statement statement, QueryStage queryStage, StatementExecutor<T> statementExecutor)
     {
         return prestoRetry.run(
                 "presto",
                 () -> networkRetry.run(
                         "presto-cluster-connection",
-                        () -> executeOnce(statement, queryStage, converter)));
+                        () -> executeOnce(statement, queryStage, statementExecutor)));
     }
 
-    private <R> QueryResult<R> executeOnce(Statement statement, QueryStage queryStage, Optional<ResultSetConverter<R>> converter)
+    private <T> T executeOnce(Statement statement, QueryStage queryStage, StatementExecutor<T> statementExecutor)
     {
         String query = formatSql(statement, Optional.empty());
-        ProgressMonitor progressMonitor = new ProgressMonitor();
 
         try (PrestoConnection connection = getConnection(queryStage)) {
             try (java.sql.Statement jdbcStatement = connection.createStatement()) {
                 PrestoStatement prestoStatement = jdbcStatement.unwrap(PrestoStatement.class);
-                prestoStatement.setProgressMonitor(progressMonitor);
-
-                ImmutableList.Builder<R> rows = ImmutableList.builder();
-                ImmutableList.Builder<String> columnNames = ImmutableList.builder();
-                if (converter.isPresent()) {
-                    try (ResultSet resultSet = jdbcStatement.executeQuery(query)) {
-                        for (int i = 1; i <= resultSet.getMetaData().getColumnCount(); i++) {
-                            columnNames.add(resultSet.getMetaData().getColumnName(i));
-                        }
-                        while (resultSet.next()) {
-                            rows.add(converter.get().apply(resultSet));
-                        }
-                    }
-                }
-                else {
-                    boolean moreResults = jdbcStatement.execute(query);
-                    if (moreResults) {
-                        consumeResultSet(jdbcStatement.getResultSet());
-                    }
-                    do {
-                        moreResults = jdbcStatement.getMoreResults();
-                        if (moreResults) {
-                            consumeResultSet(jdbcStatement.getResultSet());
-                        }
-                    }
-                    while (moreResults || jdbcStatement.getUpdateCount() != -1);
-                }
-
-                checkState(progressMonitor.getLastQueryStats().isPresent(), "lastQueryStats is missing");
-                return new QueryResult<>(rows.build(), columnNames.build(), progressMonitor.getLastQueryStats().get());
+                prestoStatement.setProgressMonitor(statementExecutor.getProgressMonitor());
+                return statementExecutor.execute(prestoStatement, query);
             }
         }
         catch (SQLException e) {
-            throw exceptionClassifier.createException(queryStage, progressMonitor.getLastQueryStats(), e);
-        }
-    }
-
-    private void consumeResultSet(ResultSet resultSet)
-            throws SQLException
-    {
-        while (resultSet.next()) {
-            // Do nothing
+            throw exceptionClassifier.createException(queryStage, statementExecutor.getProgressMonitor().getLastQueryStats(), e);
         }
     }
 
@@ -197,14 +160,16 @@ public class JdbcPrestoAction
             case REWRITE:
             case DESCRIBE:
                 return metadataTimeout;
-            case CHECKSUM:
+            case CONTROL_CHECKSUM:
+            case TEST_CHECKSUM:
+            case DETERMINISM_ANALYSIS_CHECKSUM:
                 return checksumTimeout;
             default:
                 return queryTimeout;
         }
     }
 
-    static class ProgressMonitor
+    private static class ProgressMonitor
             implements Consumer<QueryStats>
     {
         private Optional<QueryStats> queryStats = Optional.empty();
@@ -218,6 +183,85 @@ public class JdbcPrestoAction
         public synchronized Optional<QueryStats> getLastQueryStats()
         {
             return queryStats;
+        }
+    }
+
+    private interface StatementExecutor<T>
+    {
+        T execute(PrestoStatement statement, String query)
+                throws SQLException;
+
+        ProgressMonitor getProgressMonitor();
+    }
+
+    private static class ResultConvertingStatementExecutor<R>
+            implements StatementExecutor<QueryResult<R>>
+    {
+        private final ResultSetConverter<R> converter;
+        private final ProgressMonitor progressMonitor = new ProgressMonitor();
+
+        public ResultConvertingStatementExecutor(ResultSetConverter<R> converter)
+        {
+            this.converter = requireNonNull(converter, "converter is null");
+        }
+
+        @Override
+        public QueryResult<R> execute(PrestoStatement statement, String query)
+                throws SQLException
+        {
+            ImmutableList.Builder<R> rows = ImmutableList.builder();
+            try (ResultSet resultSet = statement.executeQuery(query)) {
+                while (resultSet.next()) {
+                    converter.apply(resultSet).ifPresent(rows::add);
+                }
+                checkState(progressMonitor.getLastQueryStats().isPresent(), "lastQueryStats is missing");
+                return new QueryResult<>(rows.build(), resultSet.getMetaData(), progressMonitor.getLastQueryStats().get());
+            }
+        }
+
+        @Override
+        public ProgressMonitor getProgressMonitor()
+        {
+            return progressMonitor;
+        }
+    }
+
+    private static class NoResultStatementExecutor<R>
+            implements StatementExecutor<QueryStats>
+    {
+        private final ProgressMonitor progressMonitor = new ProgressMonitor();
+
+        @Override
+        public QueryStats execute(PrestoStatement statement, String query)
+                throws SQLException
+        {
+            boolean moreResults = statement.execute(query);
+            if (moreResults) {
+                consumeResultSet(statement.getResultSet());
+            }
+            do {
+                moreResults = statement.getMoreResults();
+                if (moreResults) {
+                    consumeResultSet(statement.getResultSet());
+                }
+            }
+            while (moreResults || statement.getUpdateCount() != -1);
+            checkState(progressMonitor.getLastQueryStats().isPresent(), "lastQueryStats is missing");
+            return progressMonitor.getLastQueryStats().get();
+        }
+
+        @Override
+        public ProgressMonitor getProgressMonitor()
+        {
+            return progressMonitor;
+        }
+
+        private static void consumeResultSet(ResultSet resultSet)
+                throws SQLException
+        {
+            while (resultSet.next()) {
+                // Do nothing
+            }
         }
     }
 }

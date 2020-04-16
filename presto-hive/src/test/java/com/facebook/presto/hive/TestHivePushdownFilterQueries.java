@@ -50,6 +50,7 @@ import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.airlift.tpch.TpchTable.getTables;
 import static java.lang.String.format;
+import static java.nio.file.StandardCopyOption.ATOMIC_MOVE;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 import static java.util.stream.Collectors.joining;
 
@@ -75,7 +76,7 @@ public class TestHivePushdownFilterQueries
             "   CASE WHEN orderkey % 43 = 0 THEN null ELSE (CAST(discount AS DECIMAL(20, 8)), CAST(tax AS DECIMAL(20, 8))) END AS long_decimals, " +
             "   CASE WHEN orderkey % 11 = 0 THEN null ELSE (orderkey, partkey, suppkey) END AS keys, \n" +
             "   CASE WHEN orderkey % 41 = 0 THEN null ELSE (extendedprice, discount, tax) END AS doubles, \n" +
-            "   CASE WHEN orderkey % 13 = 0 THEN null ELSE ((orderkey, partkey), (suppkey,), CASE WHEN orderkey % 17 = 0 THEN null ELSE (orderkey, partkey) END) END AS nested_keys, \n" +
+            "   CASE WHEN orderkey % 13 = 0 THEN null ELSE ARRAY[ARRAY[orderkey, partkey], ARRAY[suppkey], CASE WHEN orderkey % 17 = 0 THEN null ELSE ARRAY[orderkey, partkey] END] END AS nested_keys, \n" +
             "   CASE WHEN orderkey % 17 = 0 THEN null ELSE (shipmode = 'AIR', returnflag = 'R') END as flags, \n" +
             "   CASE WHEN orderkey % 19 = 0 THEN null ELSE (CAST(discount AS REAL), CAST(tax AS REAL)) END as reals, \n" +
             "   CASE WHEN orderkey % 23 = 0 THEN null ELSE (orderkey, linenumber, (CAST(day(shipdate) as TINYINT), CAST(month(shipdate) AS TINYINT), CAST(year(shipdate) AS INTEGER))) END AS info, \n" +
@@ -103,6 +104,9 @@ public class TestHivePushdownFilterQueries
     {
         DistributedQueryRunner queryRunner = HiveQueryRunner.createQueryRunner(getTables(),
                 ImmutableMap.of("experimental.pushdown-subfields-enabled", "true"),
+                // TODO: enable failure detector.  Currently this test has a ton of major GC activity on travis,
+                //  and the failure detector may make the test run longer
+                ImmutableMap.of("failure-detector.enabled", "false"),
                 "sql-standard",
                 ImmutableMap.of("hive.pushdown-filter-enabled", "true"),
                 Optional.empty());
@@ -173,8 +177,8 @@ public class TestHivePushdownFilterQueries
 
         assertQuery(legacyUnnest, "SELECT orderkey, date.day FROM lineitem_ex CROSS JOIN UNNEST(dates) t(date)",
                 "SELECT orderkey, day(shipdate) FROM lineitem WHERE orderkey % 31 <> 0 UNION ALL " +
-                "SELECT orderkey, day(commitdate) FROM lineitem WHERE orderkey % 31 <> 0 UNION ALL " +
-                "SELECT orderkey, day(receiptdate) FROM lineitem WHERE orderkey % 31 <> 0");
+                        "SELECT orderkey, day(commitdate) FROM lineitem WHERE orderkey % 31 <> 0 UNION ALL " +
+                        "SELECT orderkey, day(receiptdate) FROM lineitem WHERE orderkey % 31 <> 0");
     }
 
     @Test
@@ -729,6 +733,10 @@ public class TestHivePushdownFilterQueries
         // filter function on numeric and boolean columns
         assertFilterProject("if(is_returned, linenumber, orderkey) % 5 = 0", "linenumber");
 
+        // filter functions with join predicate pushdown
+        assertQueryReturnsEmptyResult("SELECT * FROM orders o, lineitem_ex l " +
+                "WHERE o.orderkey <> 100 AND cardinality(l.keys) >= 5 AND l.keys[5] <> 1 AND l.keys[5] = o.orderkey");
+
         // filter functions on array columns
         assertFilterProject("keys[1] % 5 = 0", "orderkey");
         assertFilterProject("nested_keys[1][1] % 5 = 0", "orderkey");
@@ -751,6 +759,16 @@ public class TestHivePushdownFilterQueries
         assertQueryFails("SELECT * FROM lineitem_ex WHERE nested_keys[1][5] > 0 AND orderkey % 5 = 0", "Array subscript out of bounds");
 
         assertFilterProject("nested_keys[1][5] > 0 AND orderkey % 5 > 10", "keys");
+    }
+
+    @Test
+    public void testNestedFilterFunctions()
+    {
+        // This query forces the shape aggregation, filter, project, filter, table scan. This ensures the outer filter is used in the query result.
+        assertQueryUsingH2Cte(
+                "select distinct shipmode from " +
+                        "(select * from lineitem_ex where orderkey % 5 = 0)" +
+                        "where ((case when (shipmode in ('RAIL', '2')) then '2' when (shipmode = 'AIR') then 'air' else 'Other' end) = '2')");
     }
 
     @Test
@@ -855,6 +873,20 @@ public class TestHivePushdownFilterQueries
         assertQueryUsingH2Cte("SELECT * FROM test_schema_evolution WHERE nation_plus_region + nation_minus_region > 20", cte);
         assertQueryUsingH2Cte("select * from test_schema_evolution where nation_plus_region = regionkey", cte);
         assertUpdate("DROP TABLE test_schema_evolution");
+    }
+
+    @Test
+    public void testStructSchemaEvolution()
+            throws IOException
+    {
+        getQueryRunner().execute("CREATE TABLE test_struct(x) AS SELECT CAST(ROW(1, 2) AS ROW(a int, b int)) AS x");
+        getQueryRunner().execute("CREATE TABLE test_struct_add_column(x) AS SELECT CAST(ROW(1, 2, 3) AS ROW(a int, b int, c int)) AS x");
+        Path oldFilePath = getOnlyPath("test_struct");
+        Path newDirectoryPath = getOnlyPath("test_struct_add_column").getParent();
+        Files.move(oldFilePath, Paths.get(newDirectoryPath.toString(), "old_file"), ATOMIC_MOVE);
+        assertQuery("SELECT * FROM test_struct_add_column", "SELECT (1, 2, 3) UNION ALL SELECT (1, 2, null)");
+        assertQuery("SELECT x.a FROM test_struct_add_column", "SELECT 1 UNION ALL SELECT 1");
+        assertQuery("SELECT count(*) FROM test_struct_add_column where x.c = 1", "SELECT 0");
     }
 
     @Test
@@ -1046,6 +1078,12 @@ public class TestHivePushdownFilterQueries
         String filePath = ((String) computeActual(noPushdownFilter(getSession()), format("SELECT \"$path\" FROM %s WHERE %s LIMIT 1", tableName, partitionClause)).getOnlyValue())
                 .replace("file:", "");
         return Paths.get(filePath).getParent();
+    }
+
+    private Path getOnlyPath(String tableName)
+    {
+        return Paths.get(((String) computeActual(noPushdownFilter(getSession()), format("SELECT \"$path\" FROM %s LIMIT 1", tableName)).getOnlyValue())
+                .replace("file:", ""));
     }
 
     private void assertQueryUsingH2Cte(String query, String cte)

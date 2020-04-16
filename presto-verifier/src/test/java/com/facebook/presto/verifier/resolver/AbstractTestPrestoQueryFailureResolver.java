@@ -14,7 +14,8 @@
 package com.facebook.presto.verifier.resolver;
 
 import com.facebook.presto.jdbc.QueryStats;
-import com.facebook.presto.verifier.framework.QueryException;
+import com.facebook.presto.verifier.framework.ClusterConnectionException;
+import com.facebook.presto.verifier.framework.PrestoQueryException;
 import org.testng.annotations.Test;
 
 import java.net.SocketTimeoutException;
@@ -30,8 +31,8 @@ import static org.testng.Assert.assertFalse;
 public class AbstractTestPrestoQueryFailureResolver
 {
     protected static final long CONTROL_CPU_TIME_MILLIS = 100000;
-    protected static final long CONTROL_PEAK_MEMORY_BYTES = 600L * 1024 * 1024 * 1024;
-    protected static final QueryStats CONTROL_QUERY_STATS = createQueryStats(CONTROL_CPU_TIME_MILLIS, CONTROL_PEAK_MEMORY_BYTES);
+    protected static final long CONTROL_PEAK_TOTAL_MEMORY_BYTES = 600L * 1024 * 1024 * 1024;
+    protected static final QueryStats CONTROL_QUERY_STATS = createQueryStats(CONTROL_CPU_TIME_MILLIS, CONTROL_PEAK_TOTAL_MEMORY_BYTES);
 
     private final FailureResolver failureResolver;
 
@@ -45,12 +46,12 @@ public class AbstractTestPrestoQueryFailureResolver
     {
         assertFalse(failureResolver.resolve(
                 CONTROL_QUERY_STATS,
-                QueryException.forPresto(
+                new PrestoQueryException(
                         new RuntimeException(),
-                        Optional.of(EXCEEDED_GLOBAL_MEMORY_LIMIT),
                         false,
-                        Optional.of(createQueryStats(CONTROL_CPU_TIME_MILLIS, CONTROL_PEAK_MEMORY_BYTES / 2)),
-                        TEST_SETUP),
+                        TEST_SETUP,
+                        Optional.of(EXCEEDED_GLOBAL_MEMORY_LIMIT),
+                        Optional.of(createQueryStats(CONTROL_CPU_TIME_MILLIS, CONTROL_PEAK_TOTAL_MEMORY_BYTES / 2))),
                 Optional.empty())
                 .isPresent());
     }
@@ -60,7 +61,7 @@ public class AbstractTestPrestoQueryFailureResolver
     {
         assertFalse(failureResolver.resolve(
                 CONTROL_QUERY_STATS,
-                QueryException.forClusterConnection(new SocketTimeoutException(), TEST_MAIN),
+                new ClusterConnectionException(new SocketTimeoutException(), TEST_MAIN),
                 Optional.empty())
                 .isPresent());
     }
@@ -70,12 +71,12 @@ public class AbstractTestPrestoQueryFailureResolver
     {
         assertFalse(failureResolver.resolve(
                 CONTROL_QUERY_STATS,
-                QueryException.forPresto(
+                new PrestoQueryException(
                         new RuntimeException(),
-                        Optional.of(EXCEEDED_GLOBAL_MEMORY_LIMIT),
                         false,
-                        Optional.empty(),
-                        TEST_MAIN),
+                        TEST_MAIN,
+                        Optional.of(EXCEEDED_GLOBAL_MEMORY_LIMIT),
+                        Optional.empty()),
                 Optional.empty())
                 .isPresent());
     }
@@ -85,12 +86,12 @@ public class AbstractTestPrestoQueryFailureResolver
     {
         assertFalse(failureResolver.resolve(
                 CONTROL_QUERY_STATS,
-                QueryException.forPresto(
+                new PrestoQueryException(
                         new RuntimeException(),
-                        Optional.of(EXCEEDED_LOCAL_MEMORY_LIMIT),
                         false,
-                        Optional.empty(),
-                        TEST_MAIN),
+                        TEST_MAIN,
+                        Optional.of(EXCEEDED_LOCAL_MEMORY_LIMIT),
+                        Optional.empty()),
                 Optional.empty())
                 .isPresent());
     }
@@ -100,8 +101,8 @@ public class AbstractTestPrestoQueryFailureResolver
         return failureResolver;
     }
 
-    protected static QueryStats createQueryStats(long cpuTimeMillls, long peakMemoryBytes)
+    protected static QueryStats createQueryStats(long cpuTimeMillls, long peakTotalMemoryBytes)
     {
-        return new QueryStats("id", "", false, false, 1, 2, 3, 4, 5, cpuTimeMillls, 7, 8, 9, 10, 11, peakMemoryBytes, Optional.empty());
+        return new QueryStats("id", "", false, false, 1, 2, 3, 4, 5, cpuTimeMillls, 7, 8, 9, 10, 11, 12, peakTotalMemoryBytes, 13, Optional.empty());
     }
 }

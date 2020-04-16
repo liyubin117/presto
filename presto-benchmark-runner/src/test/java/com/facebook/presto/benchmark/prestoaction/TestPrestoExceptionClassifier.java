@@ -32,7 +32,7 @@ import java.util.Optional;
 import static com.facebook.presto.benchmark.framework.QueryException.Type.CLUSTER_CONNECTION;
 import static com.facebook.presto.benchmark.framework.QueryException.Type.PRESTO;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_CORRUPTED_COLUMN_STATISTICS;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_CORRUPTED_COLUMN_STATISTICS;
 import static com.facebook.presto.spi.StandardErrorCode.EXCEEDED_TIME_LIMIT;
 import static com.facebook.presto.spi.StandardErrorCode.FUNCTION_IMPLEMENTATION_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.NO_NODES_AVAILABLE;
@@ -42,7 +42,7 @@ import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 
 public class TestPrestoExceptionClassifier
 {
-    private static final QueryStats QUERY_STATS = new QueryStats("id", "", false, false, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, Optional.empty());
+    private static final QueryStats QUERY_STATS = new QueryStats("id", "", false, false, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, Optional.empty());
 
     private final SqlExceptionClassifier classifier = new PrestoExceptionClassifier(ImmutableSet.of());
 

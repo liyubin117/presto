@@ -253,6 +253,17 @@ Accessors
 
     Returns the point value that is the mathematical centroid of a geometry.
 
+.. function:: ST_Centroid(SphericalGeography) -> Point
+
+    Returns the point value that is the mathematical centroid of a spherical geometry.
+
+    It supports Points and MultiPoints as input and returns the three-dimensional centroid
+    projected onto the surface of the (spherical) Earth
+    e.g. MULTIPOINT (0 -45, 0 45, 30 0, -30 0) returns Point(0, 0)
+    Note: In the case that the three-dimensional centroid is at (0, 0, 0), the spherical centroid
+    is undefined and an arbitrary point will be returned
+    e.g. MULTIPOINT (0 0, -180 0) returns Point(-90, 45)
+
 .. function:: ST_ConvexHull(Geometry) -> Geometry
 
     Returns the minimum convex geometry that encloses all input geometries.
@@ -309,6 +320,7 @@ Accessors
 .. function:: ST_IsSimple(Geometry) -> boolean
 
     Returns ``true`` if this Geometry has no anomalous geometric points, such as self intersection or self tangency.
+    Use :func:`geometry_invalid_reason` to determine why the geometry is not simple.
 
 .. function:: ST_IsRing(Geometry) -> boolean
 
@@ -431,8 +443,10 @@ Accessors
 
 .. function:: geometry_invalid_reason(Geometry) -> varchar
 
-    Returns the reason for why the input geometry is not valid.
-    Returns ``null`` if the input is valid.
+    Returns the reason for why the input geometry is not valid or not simple.
+    If the geometry is neither valid no simple, it will only give the reason
+    for invalidity.
+    Returns ``null`` if the input is valid and simple.
 
 .. function:: great_circle_distance(latitude1, longitude1, latitude2, longitude2) -> double
 
@@ -453,7 +467,15 @@ Bing Tiles
 
 These functions convert between geometries and
 `Bing tiles <https://msdn.microsoft.com/en-us/library/bb259689.aspx>`_.  For
-Bing tiles, ``x`` and ``y`` refer to ``tile_x`` and ``tile_y``.
+Bing tiles, ``x`` and ``y`` refer to ``tile_x`` and ``tile_y``.  Bing Tiles
+can be cast to and from BigInts, using an internal representation that encodes
+the ``zoom``, ``x``, and ``y`` efficiently::
+
+    cast(cast(tile AS BIGINT) AS BINGTILE)
+
+While every tile can be cast to a bigint, casting from a bigint that does not
+represent a valid tile will raise an exception.
+
 
 .. function:: bing_tile(x, y, zoom_level) -> BingTile
 

@@ -26,6 +26,7 @@ import com.facebook.presto.spi.function.QualifiedFunctionName;
 import com.facebook.presto.spi.function.StandardFunctionResolution;
 import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.MarkDistinctNode;
 import com.facebook.presto.spi.plan.OrderingScheme;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
@@ -49,7 +50,6 @@ import com.facebook.presto.sql.planner.plan.ExplainAnalyzeNode;
 import com.facebook.presto.sql.planner.plan.GroupIdNode;
 import com.facebook.presto.sql.planner.plan.IndexJoinNode;
 import com.facebook.presto.sql.planner.plan.JoinNode;
-import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
@@ -500,6 +500,7 @@ public class PushdownSubfields
 
                     if (indexExpression instanceof ConstantExpression) {
                         Object index = ((ConstantExpression) indexExpression).getValue();
+                        verify(index != null, "Struct field index cannot be null");
                         if (index instanceof Number) {
                             Optional<String> fieldName = baseType.getFields().get(((Number) index).intValue()).getName();
                             if (fieldName.isPresent()) {
@@ -520,6 +521,9 @@ public class PushdownSubfields
 
                     if (indexExpression instanceof ConstantExpression) {
                         Object index = ((ConstantExpression) indexExpression).getValue();
+                        if (index == null) {
+                            return Optional.empty();
+                        }
                         if (index instanceof Number) {
                             elements.add(new Subfield.LongSubscript(((Number) index).longValue()));
                             expression = arguments.get(0);

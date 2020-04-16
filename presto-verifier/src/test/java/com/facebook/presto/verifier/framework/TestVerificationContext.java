@@ -33,8 +33,8 @@ public class TestVerificationContext
     @Test
     public void testDuplicateExceptions()
     {
-        VerificationContext context = new VerificationContext();
-        QueryException queryException = QueryException.forPresto(new RuntimeException(), Optional.of(REMOTE_HOST_GONE), false, Optional.empty(), QUERY_STAGE);
+        VerificationContext context = VerificationContext.create();
+        QueryException queryException = new PrestoQueryException(new RuntimeException(), false, QUERY_STAGE, Optional.of(REMOTE_HOST_GONE), Optional.empty());
 
         context.addException(queryException);
         context.addException(queryException);
@@ -48,9 +48,9 @@ public class TestVerificationContext
     @Test
     public void testMultipleExceptions()
     {
-        VerificationContext context = new VerificationContext();
-        context.addException(QueryException.forClusterConnection(new SocketTimeoutException(), QUERY_STAGE));
-        context.addException(QueryException.forClusterConnection(new SocketTimeoutException(), QUERY_STAGE));
+        VerificationContext context = VerificationContext.create();
+        context.addException(new ClusterConnectionException(new SocketTimeoutException(), QUERY_STAGE));
+        context.addException(new ClusterConnectionException(new SocketTimeoutException(), QUERY_STAGE));
 
         List<QueryFailure> queryFailures = context.getQueryFailures();
         assertEquals(queryFailures.size(), 2);

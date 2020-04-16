@@ -19,6 +19,7 @@ import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.security.BasicPrincipal;
 import com.facebook.presto.spi.security.Identity;
 import com.facebook.presto.spi.security.SelectedRole;
+import com.facebook.presto.spi.security.TokenAuthenticator;
 import com.facebook.presto.spi.session.ResourceEstimates;
 import com.facebook.presto.spi.type.TimeZoneKey;
 import com.facebook.presto.transaction.TransactionId;
@@ -253,16 +254,26 @@ public final class SessionRepresentation
 
     public Session toSession(SessionPropertyManager sessionPropertyManager)
     {
-        return toSession(sessionPropertyManager, emptyMap());
+        return toSession(sessionPropertyManager, emptyMap(), emptyMap());
     }
 
     public Session toSession(SessionPropertyManager sessionPropertyManager, Map<String, String> extraCredentials)
+    {
+        return toSession(sessionPropertyManager, extraCredentials, emptyMap());
+    }
+
+    public Session toSession(SessionPropertyManager sessionPropertyManager, Map<String, String> extraCredentials, Map<String, TokenAuthenticator> extraAuthenticators)
     {
         return new Session(
                 new QueryId(queryId),
                 transactionId,
                 clientTransactionSupport,
-                new Identity(user, principal.map(BasicPrincipal::new), roles, extraCredentials),
+                new Identity(
+                        user,
+                        principal.map(BasicPrincipal::new),
+                        roles,
+                        extraCredentials,
+                        extraAuthenticators),
                 source,
                 catalog,
                 schema,

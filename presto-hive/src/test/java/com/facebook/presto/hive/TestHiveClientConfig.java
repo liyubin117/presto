@@ -18,6 +18,7 @@ import com.facebook.presto.hive.HiveClientConfig.HdfsAuthenticationType;
 import com.facebook.presto.hive.HiveClientConfig.HiveMetastoreAuthenticationType;
 import com.facebook.presto.hive.s3.S3FileSystemType;
 import com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
@@ -34,6 +35,7 @@ import static com.facebook.presto.hive.HiveCompressionCodec.SNAPPY;
 import static com.facebook.presto.hive.HiveStorageFormat.DWRF;
 import static com.facebook.presto.hive.HiveStorageFormat.ORC;
 import static com.facebook.presto.hive.TestHiveUtil.nonDefaultTimeZone;
+import static com.facebook.presto.spi.schedule.NodeSelectionStrategy.HARD_AFFINITY;
 
 public class TestHiveClientConfig
 {
@@ -55,7 +57,7 @@ public class TestHiveClientConfig
                 .setSplitLoaderConcurrency(4)
                 .setDomainCompactionThreshold(100)
                 .setWriterSortBufferSize(new DataSize(64, Unit.MEGABYTE))
-                .setForceLocalScheduling(false)
+                .setNodeSelectionStrategy(NodeSelectionStrategy.valueOf("NO_PREFERENCE"))
                 .setMaxConcurrentFileRenames(20)
                 .setMaxConcurrentZeroRowFileCreations(20)
                 .setRecursiveDirWalkerEnabled(false)
@@ -70,6 +72,8 @@ public class TestHiveClientConfig
                 .setCompressionCodec(HiveCompressionCodec.GZIP)
                 .setRespectTableFormat(true)
                 .setImmutablePartitions(false)
+                .setInsertOverwriteImmutablePartitionEnabled(false)
+                .setFailFastOnInsertIntoImmutablePartitionsEnabled(true)
                 .setSortedWritingEnabled(true)
                 .setMaxPartitionsPerWriter(100)
                 .setMaxOpenSortFiles(50)
@@ -123,7 +127,11 @@ public class TestHiveClientConfig
                 .setPushdownFilterEnabled(false)
                 .setZstdJniDecompressionEnabled(false)
                 .setRangeFiltersOnSubscriptsEnabled(false)
-                .setAdaptiveFilterReorderingEnabled(true));
+                .setAdaptiveFilterReorderingEnabled(true)
+                .setFileStatusCacheExpireAfterWrite(new Duration(0, TimeUnit.SECONDS))
+                .setFileStatusCacheMaxSize(0)
+                .setFileStatusCacheTables("")
+                .setPageFileStripeMaxSize(new DataSize(24, Unit.MEGABYTE)));
     }
 
     @Test
@@ -156,10 +164,12 @@ public class TestHiveClientConfig
                 .put("hive.compression-codec", "NONE")
                 .put("hive.respect-table-format", "false")
                 .put("hive.immutable-partitions", "true")
+                .put("hive.insert-overwrite-immutable-partitions-enabled", "true")
+                .put("hive.fail-fast-on-insert-into-immutable-partitions-enabled", "false")
                 .put("hive.max-partitions-per-writers", "222")
                 .put("hive.max-open-sort-files", "333")
                 .put("hive.write-validation-threads", "11")
-                .put("hive.force-local-scheduling", "true")
+                .put("hive.node-selection-strategy", "HARD_AFFINITY")
                 .put("hive.max-concurrent-file-renames", "100")
                 .put("hive.max-concurrent-zero-row-file-creations", "100")
                 .put("hive.assume-canonical-partition-keys", "true")
@@ -212,6 +222,10 @@ public class TestHiveClientConfig
                 .put("hive.range-filters-on-subscripts-enabled", "true")
                 .put("hive.adaptive-filter-reordering-enabled", "false")
                 .put("hive.zstd-jni-decompression-enabled", "true")
+                .put("hive.file-status-cache-tables", "foo.bar1, foo.bar2")
+                .put("hive.file-status-cache-size", "1000")
+                .put("hive.file-status-cache-expire-time", "30m")
+                .put("hive.pagefile.writer.stripe-max-size", "1kB")
                 .build();
 
         HiveClientConfig expected = new HiveClientConfig()
@@ -229,7 +243,7 @@ public class TestHiveClientConfig
                 .setSplitLoaderConcurrency(1)
                 .setDomainCompactionThreshold(42)
                 .setWriterSortBufferSize(new DataSize(13, Unit.MEGABYTE))
-                .setForceLocalScheduling(true)
+                .setNodeSelectionStrategy(HARD_AFFINITY)
                 .setMaxConcurrentFileRenames(100)
                 .setMaxConcurrentZeroRowFileCreations(100)
                 .setRecursiveDirWalkerEnabled(true)
@@ -242,6 +256,8 @@ public class TestHiveClientConfig
                 .setCompressionCodec(HiveCompressionCodec.NONE)
                 .setRespectTableFormat(false)
                 .setImmutablePartitions(true)
+                .setInsertOverwriteImmutablePartitionEnabled(true)
+                .setFailFastOnInsertIntoImmutablePartitionsEnabled(false)
                 .setMaxPartitionsPerWriter(222)
                 .setMaxOpenSortFiles(333)
                 .setWriteValidationThreads(11)
@@ -297,7 +313,11 @@ public class TestHiveClientConfig
                 .setPushdownFilterEnabled(true)
                 .setZstdJniDecompressionEnabled(true)
                 .setRangeFiltersOnSubscriptsEnabled(true)
-                .setAdaptiveFilterReorderingEnabled(false);
+                .setAdaptiveFilterReorderingEnabled(false)
+                .setFileStatusCacheTables("foo.bar1,foo.bar2")
+                .setFileStatusCacheMaxSize(1000)
+                .setFileStatusCacheExpireAfterWrite(new Duration(30, TimeUnit.MINUTES))
+                .setPageFileStripeMaxSize(new DataSize(1, Unit.KILOBYTE));
 
         ConfigAssertions.assertFullMapping(properties, expected);
     }

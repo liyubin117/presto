@@ -23,6 +23,7 @@ import com.facebook.presto.spi.plan.ExceptNode;
 import com.facebook.presto.spi.plan.FilterNode;
 import com.facebook.presto.spi.plan.IntersectNode;
 import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.MarkDistinctNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.ProjectNode;
@@ -48,7 +49,6 @@ import com.facebook.presto.sql.planner.plan.IndexJoinNode;
 import com.facebook.presto.sql.planner.plan.IndexSourceNode;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
-import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
@@ -669,8 +669,13 @@ public class PruneUnreferencedOutputs
         {
             ImmutableSet.Builder<VariableReferenceExpression> expectedInputs = ImmutableSet.<VariableReferenceExpression>builder()
                     .addAll(node.getColumns());
-            if (node.getPartitioningScheme().isPresent()) {
-                PartitioningScheme partitioningScheme = node.getPartitioningScheme().get();
+            if (node.getTablePartitioningScheme().isPresent()) {
+                PartitioningScheme partitioningScheme = node.getTablePartitioningScheme().get();
+                partitioningScheme.getPartitioning().getVariableReferences().forEach(expectedInputs::add);
+                partitioningScheme.getHashColumn().ifPresent(expectedInputs::add);
+            }
+            if (node.getPreferredShufflePartitioningScheme().isPresent()) {
+                PartitioningScheme partitioningScheme = node.getPreferredShufflePartitioningScheme().get();
                 partitioningScheme.getPartitioning().getVariableReferences().forEach(expectedInputs::add);
                 partitioningScheme.getHashColumn().ifPresent(expectedInputs::add);
             }
@@ -691,7 +696,8 @@ public class PruneUnreferencedOutputs
                     node.getTableCommitContextVariable(),
                     node.getColumns(),
                     node.getColumnNames(),
-                    node.getPartitioningScheme(),
+                    node.getTablePartitioningScheme(),
+                    node.getPreferredShufflePartitioningScheme(),
                     node.getStatisticsAggregation());
         }
 

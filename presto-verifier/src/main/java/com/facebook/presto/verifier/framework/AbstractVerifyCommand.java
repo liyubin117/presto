@@ -44,9 +44,7 @@ public abstract class AbstractVerifyCommand
                 .add(new VerifierModule(
                         getSqlParserOptions(),
                         getCustomQueryFilterClasses(),
-                        getSqlExceptionClassifier(),
-                        getFailureResolverFactories(),
-                        getTablePropertyOverrides()))
+                        getSqlExceptionClassifier()))
                 .add(new SourceQueryModule(getCustomSourceQuerySupplierTypes()))
                 .add(new EventClientModule(getCustomEventClientTypes()))
                 .addAll(getAdditionalModules())

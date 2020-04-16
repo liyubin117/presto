@@ -68,8 +68,9 @@ import com.facebook.presto.execution.resourceGroups.NoOpResourceGroupManager;
 import com.facebook.presto.execution.scheduler.LegacyNetworkTopology;
 import com.facebook.presto.execution.scheduler.NodeScheduler;
 import com.facebook.presto.execution.scheduler.NodeSchedulerConfig;
-import com.facebook.presto.execution.scheduler.SqlQueryScheduler.StreamingPlanSection;
-import com.facebook.presto.execution.scheduler.SqlQueryScheduler.StreamingSubPlan;
+import com.facebook.presto.execution.scheduler.StreamingPlanSection;
+import com.facebook.presto.execution.scheduler.StreamingSubPlan;
+import com.facebook.presto.execution.scheduler.nodeSelection.NodeSelectionStats;
 import com.facebook.presto.execution.warnings.DefaultWarningCollector;
 import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.execution.warnings.WarningCollectorConfig;
@@ -211,7 +212,7 @@ import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.airlift.json.JsonCodec.jsonCodec;
 import static com.facebook.presto.cost.StatsCalculatorModule.createNewStatsCalculator;
-import static com.facebook.presto.execution.scheduler.SqlQueryScheduler.extractStreamingSections;
+import static com.facebook.presto.execution.scheduler.StreamingPlanSection.extractStreamingSections;
 import static com.facebook.presto.execution.scheduler.TableWriteInfo.createTableWriteInfo;
 import static com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.GROUPED_SCHEDULING;
 import static com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.REWINDABLE_GROUPED_SCHEDULING;
@@ -317,6 +318,7 @@ public class LocalQueryRunner
         NodeScheduler nodeScheduler = new NodeScheduler(
                 new LegacyNetworkTopology(),
                 nodeManager,
+                new NodeSelectionStats(),
                 nodeSchedulerConfig,
                 new NodeTaskMap(finalizerService));
         this.pageSinkManager = new PageSinkManager();
@@ -386,7 +388,8 @@ public class LocalQueryRunner
                 new RowExpressionDomainTranslator(metadata),
                 new RowExpressionPredicateCompiler(metadata),
                 new RowExpressionDeterminismEvaluator(metadata.getFunctionManager()),
-                new FilterStatsCalculator(metadata, scalarStatsCalculator, statsNormalizer));
+                new FilterStatsCalculator(metadata, scalarStatsCalculator, statsNormalizer),
+                blockEncodingManager);
 
         GlobalSystemConnectorFactory globalSystemConnectorFactory = new GlobalSystemConnectorFactory(ImmutableSet.of(
                 new NodeSystemTable(nodeManager),
@@ -599,6 +602,12 @@ public class LocalQueryRunner
         throw new UnsupportedOperationException();
     }
 
+    @Override
+    public void loadFunctionNamespaceManager(String functionNamespaceManagerName, String catalogName, Map<String, String> properties)
+    {
+        metadata.getFunctionManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
+    }
+
     public LocalQueryRunner printPlan()
     {
         printPlan = true;
@@ -790,10 +799,11 @@ public class LocalQueryRunner
                 subplan.getFragment().getPartitioningScheme().getOutputLayout(),
                 subplan.getFragment().getTableScanSchedulingOrder(),
                 outputFactory,
+                Optional.empty(),
                 new RemoteSourceFactory()
                 {
                     @Override
-                    public OperatorFactory createRemoteSource(Session session, int operatorId, PlanNodeId planNodeId)
+                    public OperatorFactory createRemoteSource(Session session, int operatorId, PlanNodeId planNodeId, List<Type> types)
                     {
                         throw new UnsupportedOperationException();
                     }

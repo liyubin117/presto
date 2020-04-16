@@ -25,7 +25,6 @@ import com.facebook.presto.spi.type.TypeManager;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.parser.SqlParserOptions;
-import com.facebook.presto.sql.tree.Property;
 import com.facebook.presto.transaction.ForTransactionManager;
 import com.facebook.presto.transaction.InMemoryTransactionManager;
 import com.facebook.presto.transaction.TransactionManager;
@@ -35,12 +34,14 @@ import com.facebook.presto.verifier.annotation.ForControl;
 import com.facebook.presto.verifier.annotation.ForTest;
 import com.facebook.presto.verifier.checksum.ArrayColumnValidator;
 import com.facebook.presto.verifier.checksum.ChecksumValidator;
+import com.facebook.presto.verifier.checksum.ColumnValidator;
 import com.facebook.presto.verifier.checksum.FloatingPointColumnValidator;
+import com.facebook.presto.verifier.checksum.MapColumnValidator;
 import com.facebook.presto.verifier.checksum.RowColumnValidator;
 import com.facebook.presto.verifier.checksum.SimpleColumnValidator;
+import com.facebook.presto.verifier.framework.Column.Category;
 import com.facebook.presto.verifier.prestoaction.SqlExceptionClassifier;
 import com.facebook.presto.verifier.prestoaction.VerificationPrestoActionModule;
-import com.facebook.presto.verifier.resolver.FailureResolverFactory;
 import com.facebook.presto.verifier.resolver.FailureResolverModule;
 import com.facebook.presto.verifier.retry.ForClusterConnection;
 import com.facebook.presto.verifier.retry.ForPresto;
@@ -54,6 +55,7 @@ import com.google.inject.Key;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.TypeLiteral;
+import com.google.inject.multibindings.MapBinder;
 
 import javax.inject.Provider;
 import javax.inject.Singleton;
@@ -65,6 +67,11 @@ import java.util.function.Predicate;
 
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
+import static com.facebook.presto.verifier.framework.Column.Category.ARRAY;
+import static com.facebook.presto.verifier.framework.Column.Category.FLOATING_POINT;
+import static com.facebook.presto.verifier.framework.Column.Category.MAP;
+import static com.facebook.presto.verifier.framework.Column.Category.ROW;
+import static com.facebook.presto.verifier.framework.Column.Category.SIMPLE;
 import static com.google.inject.Scopes.SINGLETON;
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static java.util.Objects.requireNonNull;
@@ -77,26 +84,21 @@ public class VerifierModule
     private final SqlParserOptions sqlParserOptions;
     private final List<Class<? extends Predicate<SourceQuery>>> customQueryFilterClasses;
     private final SqlExceptionClassifier exceptionClassifier;
-    private final List<FailureResolverFactory> failureResolverFactories;
-    private final List<Property> tablePropertyOverrides;
 
     public VerifierModule(
             SqlParserOptions sqlParserOptions,
             List<Class<? extends Predicate<SourceQuery>>> customQueryFilterClasses,
-            SqlExceptionClassifier exceptionClassifier,
-            List<FailureResolverFactory> failureResolverFactories,
-            List<Property> tablePropertyOverrides)
+            SqlExceptionClassifier exceptionClassifier)
     {
         this.sqlParserOptions = requireNonNull(sqlParserOptions, "sqlParserOptions is null");
         this.customQueryFilterClasses = ImmutableList.copyOf(customQueryFilterClasses);
         this.exceptionClassifier = requireNonNull(exceptionClassifier, "exceptionClassifier is null");
-        this.failureResolverFactories = requireNonNull(failureResolverFactories, "failureResolverFactories is null");
-        this.tablePropertyOverrides = requireNonNull(tablePropertyOverrides, "tablePropertyOverrides is null");
     }
 
     protected final void setup(Binder binder)
     {
         configBinder(binder).bindConfig(VerifierConfig.class);
+        configBinder(binder).bindConfig(DeterminismAnalyzerConfig.class);
         configBinder(binder).bindConfig(QueryConfigurationOverridesConfig.class, ForControl.class, "control");
         configBinder(binder).bindConfig(QueryConfigurationOverridesConfig.class, ForTest.class, "test");
         binder.bind(QueryConfigurationOverrides.class).annotatedWith(ForControl.class).to(Key.get(QueryConfigurationOverridesConfig.class, ForControl.class)).in(SINGLETON);
@@ -137,16 +139,17 @@ public class VerifierModule
         // verifier
         install(new VerificationPrestoActionModule(exceptionClassifier));
         install(new VerificationQueryRewriterModule());
-        install(new FailureResolverModule(failureResolverFactories));
+        install(FailureResolverModule.BUILT_IN);
         binder.bind(VerificationManager.class).in(SINGLETON);
         binder.bind(VerificationFactory.class).in(SINGLETON);
         binder.bind(ChecksumValidator.class).in(SINGLETON);
-        binder.bind(SimpleColumnValidator.class).in(SINGLETON);
-        binder.bind(FloatingPointColumnValidator.class).in(SINGLETON);
-        binder.bind(ArrayColumnValidator.class).in(SINGLETON);
-        binder.bind(RowColumnValidator.class).in(SINGLETON);
+        MapBinder<Category, ColumnValidator> columnValidatorBinder = MapBinder.newMapBinder(binder, Category.class, ColumnValidator.class);
+        columnValidatorBinder.addBinding(SIMPLE).to(SimpleColumnValidator.class).in(SINGLETON);
+        columnValidatorBinder.addBinding(FLOATING_POINT).to(FloatingPointColumnValidator.class).in(SINGLETON);
+        columnValidatorBinder.addBinding(ARRAY).to(ArrayColumnValidator.class).in(SINGLETON);
+        columnValidatorBinder.addBinding(ROW).to(RowColumnValidator.class).in(SINGLETON);
+        columnValidatorBinder.addBinding(MAP).to(MapColumnValidator.class).in(SINGLETON);
         binder.bind(new TypeLiteral<List<Predicate<SourceQuery>>>() {}).toProvider(new CustomQueryFilterProvider(customQueryFilterClasses));
-        binder.bind(new TypeLiteral<List<Property>>() {}).toInstance(tablePropertyOverrides);
     }
 
     private static class CustomQueryFilterProvider

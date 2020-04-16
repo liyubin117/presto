@@ -16,6 +16,7 @@ package com.facebook.presto.execution.resourceGroups;
 import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.node.NodeInfo;
 import com.facebook.presto.execution.ManagedQueryExecution;
+import com.facebook.presto.execution.QueryManagerConfig;
 import com.facebook.presto.execution.resourceGroups.InternalResourceGroup.RootInternalResourceGroup;
 import com.facebook.presto.server.ResourceGroupInfo;
 import com.facebook.presto.spi.PrestoException;
@@ -43,6 +44,7 @@ import java.io.File;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -82,21 +84,30 @@ public final class InternalResourceGroupManager<C>
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicLong lastCpuQuotaGenerationNanos = new AtomicLong(System.nanoTime());
     private final Map<String, ResourceGroupConfigurationManagerFactory> configurationManagerFactories = new ConcurrentHashMap<>();
+    private final AtomicBoolean taskLimitExceeded = new AtomicBoolean();
+    private final int maxTotalRunningTaskCountToNotExecuteNewQuery;
 
     @Inject
-    public InternalResourceGroupManager(LegacyResourceGroupConfigurationManager legacyManager, ClusterMemoryPoolManager memoryPoolManager, NodeInfo nodeInfo, MBeanExporter exporter)
+    public InternalResourceGroupManager(
+            LegacyResourceGroupConfigurationManager legacyManager,
+            ClusterMemoryPoolManager memoryPoolManager,
+            QueryManagerConfig queryManagerConfig,
+            NodeInfo nodeInfo,
+            MBeanExporter exporter)
     {
+        requireNonNull(queryManagerConfig, "queryManagerConfig is null");
         this.exporter = requireNonNull(exporter, "exporter is null");
         this.configurationManagerContext = new ResourceGroupConfigurationManagerContextInstance(memoryPoolManager, nodeInfo.getEnvironment());
         this.legacyManager = requireNonNull(legacyManager, "legacyManager is null");
         this.configurationManager = new AtomicReference<>(cast(legacyManager));
+        this.maxTotalRunningTaskCountToNotExecuteNewQuery = queryManagerConfig.getMaxTotalRunningTaskCountToNotExecuteNewQuery();
     }
 
     @Override
-    public ResourceGroupInfo getResourceGroupInfo(ResourceGroupId id)
+    public ResourceGroupInfo getResourceGroupInfo(ResourceGroupId id, boolean includeQueryInfo, boolean summarizeSubgroups, boolean includeStaticSubgroupsOnly)
     {
         checkArgument(groups.containsKey(id), "Group %s does not exist", id);
-        return groups.get(id).getFullInfo();
+        return groups.get(id).getResourceGroupInfo(includeQueryInfo, summarizeSubgroups, includeStaticSubgroupsOnly);
     }
 
     @Override
@@ -196,6 +207,11 @@ public final class InternalResourceGroupManager<C>
             // nano time has overflowed
             lastCpuQuotaGenerationNanos.set(nanoTime);
         }
+
+        if (maxTotalRunningTaskCountToNotExecuteNewQuery != Integer.MAX_VALUE) {
+            taskLimitExceeded.set(getTotalRunningTaskCount() > maxTotalRunningTaskCountToNotExecuteNewQuery);
+        }
+
         for (RootInternalResourceGroup group : rootGroups) {
             try {
                 if (elapsedSeconds > 0) {
@@ -206,6 +222,7 @@ public final class InternalResourceGroupManager<C>
                 log.error(e, "Exception while generation cpu quota for %s", group);
             }
             try {
+                group.setTaskLimitExceeded(taskLimitExceeded.get());
                 group.processQueuedQueries();
             }
             catch (RuntimeException e) {
@@ -223,7 +240,9 @@ public final class InternalResourceGroupManager<C>
                 createGroupIfNecessary(new SelectionContext<>(id.getParent().get(), context.getContext()), executor);
                 InternalResourceGroup parent = groups.get(id.getParent().get());
                 requireNonNull(parent, "parent is null");
-                group = parent.getOrCreateSubGroup(id.getLastSegment());
+                // parent segments size equals to subgroup segment index
+                int subGroupSegmentIndex = parent.getId().getSegments().size();
+                group = parent.getOrCreateSubGroup(id.getLastSegment(), !context.getFirstDynamicSegmentPosition().equals(OptionalInt.of(subGroupSegmentIndex)));
             }
             else {
                 RootInternalResourceGroup root = new RootInternalResourceGroup(id.getSegments().get(0), this::exportGroup, executor);
@@ -276,6 +295,29 @@ public final class InternalResourceGroupManager<C>
         }
 
         return queriesQueuedInternal;
+    }
+
+    @Managed
+    public int getTaskLimitExceeded()
+    {
+        return taskLimitExceeded.get() ? 1 : 0;
+    }
+
+    private int getTotalRunningTaskCount()
+    {
+        int taskCount = 0;
+        for (RootInternalResourceGroup rootGroup : rootGroups) {
+            synchronized (rootGroup) {
+                taskCount += rootGroup.getRunningTaskCount();
+            }
+        }
+        return taskCount;
+    }
+
+    @VisibleForTesting
+    public void setTaskLimitExceeded(boolean exceeded)
+    {
+        taskLimitExceeded.set(exceeded);
     }
 
     @SuppressWarnings("unchecked")

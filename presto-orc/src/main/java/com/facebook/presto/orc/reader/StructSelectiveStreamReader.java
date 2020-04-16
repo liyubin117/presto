@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.orc.reader;
 
-import com.facebook.presto.memory.context.AggregatedMemoryContext;
-import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.orc.OrcAggregatedMemoryContext;
+import com.facebook.presto.orc.OrcLocalMemoryContext;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.TupleDomainFilter;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
@@ -27,6 +27,8 @@ import com.facebook.presto.spi.block.BlockLease;
 import com.facebook.presto.spi.block.ClosingBlockLease;
 import com.facebook.presto.spi.block.RowBlock;
 import com.facebook.presto.spi.block.RunLengthEncodedBlock;
+import com.facebook.presto.spi.type.RowType;
+import com.facebook.presto.spi.type.RowType.Field;
 import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -39,12 +41,14 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 import static com.facebook.presto.array.Arrays.ensureCapacity;
 import static com.facebook.presto.orc.TupleDomainFilter.IS_NOT_NULL;
@@ -55,6 +59,7 @@ import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStr
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.airlift.slice.SizeOf.sizeOf;
@@ -76,7 +81,7 @@ public class StructSelectiveStreamReader
     private final SelectiveStreamReader[] orderedNestedReaders;
     private final boolean missingFieldFilterIsFalse;
 
-    private final LocalMemoryContext systemMemoryContext;
+    private final OrcLocalMemoryContext systemMemoryContext;
 
     private int readOffset;
     private int nestedReadOffset;
@@ -103,10 +108,10 @@ public class StructSelectiveStreamReader
             Optional<Type> outputType,
             DateTimeZone hiveStorageTimeZone,
             boolean legacyMapSubscript,
-            AggregatedMemoryContext systemMemoryContext)
+            OrcAggregatedMemoryContext systemMemoryContext)
     {
         this.streamDescriptor = requireNonNull(streamDescriptor, "streamDescriptor is null");
-        this.systemMemoryContext = requireNonNull(systemMemoryContext, "systemMemoryContext is null").newLocalMemoryContext(StructSelectiveStreamReader.class.getSimpleName());
+        this.systemMemoryContext = requireNonNull(systemMemoryContext, "systemMemoryContext is null").newOrcLocalMemoryContext(StructSelectiveStreamReader.class.getSimpleName());
         this.outputRequired = requireNonNull(outputType, "outputType is null").isPresent();
         this.outputType = outputType.orElse(null);
 
@@ -126,8 +131,8 @@ public class StructSelectiveStreamReader
             }
         }
 
-        Optional<List<Type>> nestedTypes = outputType.map(type -> type.getTypeParameters());
-        List<StreamDescriptor> nestedStreams = streamDescriptor.getNestedStreams();
+        Map<String, StreamDescriptor> nestedStreams = Maps.uniqueIndex(
+                streamDescriptor.getNestedStreams(), stream -> stream.getFieldName().toLowerCase(Locale.ENGLISH));
 
         Optional<Map<String, List<Subfield>>> requiredFields = getRequiredFields(requiredSubfields);
 
@@ -143,37 +148,49 @@ public class StructSelectiveStreamReader
                 .map(Subfield.NestedField::getName)
                 .collect(toImmutableSet());
 
-        if (!checkMissingFieldFilters(nestedStreams, filters)) {
+        if (!checkMissingFieldFilters(nestedStreams.values(), filters)) {
             this.missingFieldFilterIsFalse = true;
             this.nestedReaders = ImmutableMap.of();
             this.orderedNestedReaders = new SelectiveStreamReader[0];
         }
         else if (outputRequired || !fieldsWithFilters.isEmpty()) {
             ImmutableMap.Builder<String, SelectiveStreamReader> nestedReaders = ImmutableMap.builder();
-            for (int i = 0; i < nestedStreams.size(); i++) {
-                StreamDescriptor nestedStream = nestedStreams.get(i);
-                String fieldName = nestedStream.getFieldName().toLowerCase(Locale.ENGLISH);
-                Optional<Type> fieldOutputType = nestedTypes.isPresent() ? Optional.of(nestedTypes.get().get(i)) : Optional.empty();
+            Map<String, Field> nestedTypes = outputType.isPresent() ? ((RowType) this.outputType).getFields().stream()
+                    .collect(toImmutableMap(field -> field.getName()
+                            .orElseThrow(() -> new IllegalArgumentException(
+                                    "ROW type does not have field names declared: " + this.outputType))
+                            .toLowerCase(Locale.ENGLISH), Function.identity()))
+                    : ImmutableMap.of();
+            Set<String> structFields = outputType.isPresent() ? nestedTypes.keySet() : nestedStreams.keySet();
+            for (String fieldName : structFields) {
+                StreamDescriptor nestedStream = nestedStreams.get(fieldName);
                 boolean requiredField = requiredFields.map(names -> names.containsKey(fieldName)).orElse(outputRequired);
+                Optional<Type> fieldOutputType = Optional.ofNullable(nestedTypes.get(fieldName)).map(Field::getType);
 
-                if (requiredField || fieldsWithFilters.contains(fieldName)) {
-                    Map<Subfield, TupleDomainFilter> nestedFilters = filters.entrySet().stream()
-                            .filter(entry -> entry.getKey().getPath().size() > 0)
-                            .filter(entry -> ((Subfield.NestedField) entry.getKey().getPath().get(0)).getName().equalsIgnoreCase(fieldName))
-                            .collect(toImmutableMap(entry -> entry.getKey().tail(fieldName), Map.Entry::getValue));
-                    List<Subfield> nestedRequiredSubfields = requiredFields.map(names -> names.get(fieldName)).orElse(ImmutableList.of());
-                    SelectiveStreamReader nestedReader = SelectiveStreamReaders.createStreamReader(
-                            nestedStream,
-                            nestedFilters,
-                            fieldOutputType,
-                            nestedRequiredSubfields,
-                            hiveStorageTimeZone,
-                            legacyMapSubscript,
-                            systemMemoryContext.newAggregatedMemoryContext());
-                    nestedReaders.put(fieldName, nestedReader);
+                if (nestedStream == null) {
+                    verify(fieldOutputType.isPresent(), "Missing output type for subfield " + fieldName);
+                    nestedReaders.put(fieldName, new MissingFieldStreamReader(fieldOutputType.get()));
                 }
                 else {
-                    nestedReaders.put(fieldName, new PruningStreamReader(nestedStream, fieldOutputType));
+                    if (requiredField || fieldsWithFilters.contains(fieldName)) {
+                        Map<Subfield, TupleDomainFilter> nestedFilters = filters.entrySet().stream()
+                                .filter(entry -> entry.getKey().getPath().size() > 0)
+                                .filter(entry -> ((Subfield.NestedField) entry.getKey().getPath().get(0)).getName().equalsIgnoreCase(fieldName))
+                                .collect(toImmutableMap(entry -> entry.getKey().tail(fieldName), Map.Entry::getValue));
+                        List<Subfield> nestedRequiredSubfields = requiredFields.map(names -> names.get(fieldName)).orElse(ImmutableList.of());
+                        SelectiveStreamReader nestedReader = SelectiveStreamReaders.createStreamReader(
+                                nestedStream,
+                                nestedFilters,
+                                fieldOutputType,
+                                nestedRequiredSubfields,
+                                hiveStorageTimeZone,
+                                legacyMapSubscript,
+                                systemMemoryContext.newOrcAggregatedMemoryContext());
+                        nestedReaders.put(fieldName, nestedReader);
+                    }
+                    else {
+                        nestedReaders.put(fieldName, new PruningStreamReader(nestedStream, fieldOutputType));
+                    }
                 }
             }
 
@@ -189,7 +206,7 @@ public class StructSelectiveStreamReader
         }
     }
 
-    private boolean checkMissingFieldFilters(List<StreamDescriptor> nestedStreams, Map<Subfield, TupleDomainFilter> filters)
+    private boolean checkMissingFieldFilters(Collection<StreamDescriptor> nestedStreams, Map<Subfield, TupleDomainFilter> filters)
     {
         if (filters.isEmpty()) {
             return true;
@@ -565,7 +582,7 @@ public class StructSelectiveStreamReader
         outputPositionCount = positionCount;
     }
 
-    private BlockLease newLease(Block block, BlockLease...fieldBlockLeases)
+    private BlockLease newLease(Block block, BlockLease... fieldBlockLeases)
     {
         valuesInUse = true;
         return ClosingBlockLease.newLease(block, () -> {
@@ -592,6 +609,15 @@ public class StructSelectiveStreamReader
     @Override
     public void close()
     {
+        nestedReaders.values().stream().forEach(SelectiveStreamReader::close);
+
+        outputPositions = null;
+        nulls = null;
+        nestedOutputPositions = null;
+        nestedPositions = null;
+
+        presentStream = null;
+        presentStreamSource = null;
         systemMemoryContext.close();
     }
 
@@ -728,6 +754,77 @@ public class StructSelectiveStreamReader
             return toStringHelper(this)
                     .addValue(streamDescriptor)
                     .toString();
+        }
+
+        @Override
+        public void close()
+        {
+            outputPositions = null;
+        }
+
+        @Override
+        public void startStripe(InputStreamSources dictionaryStreamSources, List<ColumnEncoding> encoding)
+        {
+        }
+
+        @Override
+        public void startRowGroup(InputStreamSources dataStreamSources)
+        {
+        }
+
+        @Override
+        public long getRetainedSizeInBytes()
+        {
+            return INSTANCE_SIZE + sizeOf(outputPositions);
+        }
+    }
+
+    private static final class MissingFieldStreamReader
+            implements SelectiveStreamReader
+    {
+        private static final int INSTANCE_SIZE = ClassLayout.parseClass(MissingFieldStreamReader.class).instanceSize();
+        private final Type outputType;
+        private int[] outputPositions;
+
+        MissingFieldStreamReader(Type type)
+        {
+            this.outputType = requireNonNull(type, "type is required");
+        }
+
+        @Override
+        public int read(int offset, int[] positions, int positionCount)
+        {
+            outputPositions = initializeOutputPositions(outputPositions, positions, positionCount);
+            return positionCount;
+        }
+
+        @Override
+        public int[] getReadPositions()
+        {
+            return outputPositions;
+        }
+
+        @Override
+        public Block getBlock(int[] positions, int positionCount)
+        {
+            return createNullBlock(outputType, positionCount);
+        }
+
+        @Override
+        public BlockLease getBlockView(int[] positions, int positionCount)
+        {
+            return ClosingBlockLease.newLease(createNullBlock(outputType, positionCount));
+        }
+
+        @Override
+        public void throwAnyError(int[] positions, int positionCount)
+        {
+        }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this).toString();
         }
 
         @Override

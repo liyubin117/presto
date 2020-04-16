@@ -30,6 +30,7 @@ import com.facebook.presto.spi.function.StandardFunctionResolution;
 import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.spi.plan.FilterNode;
 import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.MarkDistinctNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanVisitor;
 import com.facebook.presto.spi.plan.ProjectNode;
@@ -74,12 +75,15 @@ import static java.util.Objects.requireNonNull;
 public class PinotQueryGenerator
 {
     private static final Logger log = Logger.get(PinotQueryGenerator.class);
-    private static final Map<String, String> UNARY_AGGREGATION_MAP = ImmutableMap.of(
-            "min", "min",
-            "max", "max",
-            "avg", "avg",
-            "sum", "sum",
-            "approx_distinct", "DISTINCTCOUNTHLL");
+    private static final Map<String, String> UNARY_AGGREGATION_MAP =
+            ImmutableMap.<String, String>builder()
+                    .put("min", "min")
+                    .put("max", "max")
+                    .put("avg", "avg")
+                    .put("sum", "sum")
+                    .put("distinctcount", "DISTINCTCOUNT")
+                    .put("approx_distinct", "DISTINCTCOUNTHLL")
+                    .build();
 
     private final PinotConfig pinotConfig;
     private final TypeManager typeManager;
@@ -130,10 +134,11 @@ public class PinotQueryGenerator
     public Optional<PinotQueryGeneratorResult> generate(PlanNode plan, ConnectorSession session)
     {
         try {
-            boolean preferBrokerQueries = PinotSessionProperties.isPreferBrokerQueries(session);
-            PinotQueryGeneratorContext context = requireNonNull(plan.accept(new PinotQueryPlanVisitor(session, preferBrokerQueries), new PinotQueryGeneratorContext()), "Resulting context is null");
-            boolean isQueryShort = context.isQueryShort(PinotSessionProperties.getNonAggregateLimitForBrokerQueries(session));
-            return Optional.of(new PinotQueryGeneratorResult(context.toQuery(pinotConfig, preferBrokerQueries, isQueryShort), context));
+            PinotQueryGeneratorContext context = requireNonNull(plan.accept(
+                    new PinotQueryPlanVisitor(session),
+                    new PinotQueryGeneratorContext()),
+                    "Resulting context is null");
+            return Optional.of(new PinotQueryGeneratorResult(context.toQuery(pinotConfig, session), context));
         }
         catch (PinotException e) {
             log.debug(e, "Possibly benign error when pushing plan into scan node %s", plan);
@@ -221,12 +226,12 @@ public class PinotQueryGenerator
             extends PlanVisitor<PinotQueryGeneratorContext, PinotQueryGeneratorContext>
     {
         private final ConnectorSession session;
-        private final boolean preferBrokerQueries;
+        private final boolean forbidBrokerQueries;
 
-        protected PinotQueryPlanVisitor(ConnectorSession session, boolean preferBrokerQueries)
+        protected PinotQueryPlanVisitor(ConnectorSession session)
         {
             this.session = session;
-            this.preferBrokerQueries = preferBrokerQueries;
+            this.forbidBrokerQueries = PinotSessionProperties.isForbidBrokerQueries(session);
         }
 
         @Override
@@ -241,6 +246,13 @@ public class PinotQueryGenerator
                 return ((VariableReferenceExpression) expression);
             }
             throw new PinotException(PINOT_UNSUPPORTED_EXPRESSION, Optional.empty(), "Expected a variable reference but got " + expression);
+        }
+
+        @Override
+        public PinotQueryGeneratorContext visitMarkDistinct(MarkDistinctNode node, PinotQueryGeneratorContext context)
+        {
+            requireNonNull(context, "context is null");
+            return node.getSource().accept(this, context);
         }
 
         @Override
@@ -400,7 +412,7 @@ public class PinotQueryGenerator
             PinotQueryGeneratorContext context = node.getSource().accept(this, contextIn.withVariablesInAggregation(variablesInAggregation));
             requireNonNull(context, "context is null");
             checkSupported(!node.getStep().isOutputPartial(), "partial aggregations are not supported in Pinot pushdown framework");
-            checkSupported(preferBrokerQueries, "Cannot push aggregation in segment mode");
+            checkSupported(!forbidBrokerQueries, "Cannot push aggregation in segment mode");
 
             // 2nd pass
             LinkedHashMap<VariableReferenceExpression, Selection> newSelections = new LinkedHashMap<>();
@@ -448,7 +460,7 @@ public class PinotQueryGenerator
         public PinotQueryGeneratorContext visitLimit(LimitNode node, PinotQueryGeneratorContext context)
         {
             checkSupported(!node.isPartial(), String.format("pinot query generator cannot handle partial limit"));
-            checkSupported(preferBrokerQueries, "Cannot push limit in segment mode");
+            checkSupported(!forbidBrokerQueries, "Cannot push limit in segment mode");
             context = node.getSource().accept(this, context);
             requireNonNull(context, "context is null");
             return context.withLimit(node.getCount()).withOutputColumns(node.getOutputVariables());
@@ -459,7 +471,7 @@ public class PinotQueryGenerator
         {
             context = node.getSource().accept(this, context);
             requireNonNull(context, "context is null");
-            checkSupported(preferBrokerQueries, "Cannot push topn in segment mode");
+            checkSupported(!forbidBrokerQueries, "Cannot push topn in segment mode");
             checkSupported(node.getStep().equals(TopNNode.Step.SINGLE), "Can only push single logical topn in");
             return context.withTopN(getOrderingScheme(node), node.getCount()).withOutputColumns(node.getOutputVariables());
         }

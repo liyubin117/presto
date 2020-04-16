@@ -71,6 +71,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 import static com.facebook.presto.execution.BasicStageExecutionStats.EMPTY_STAGE_STATS;
+import static com.facebook.presto.execution.QueryState.DISPATCHING;
 import static com.facebook.presto.execution.QueryState.FINISHED;
 import static com.facebook.presto.execution.QueryState.FINISHING;
 import static com.facebook.presto.execution.QueryState.PLANNING;
@@ -96,14 +97,14 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 @ThreadSafe
 public class QueryStateMachine
 {
-    public static final Logger QUERY_STATE_LOG = Logger.get(QueryStateMachine.class);
+    private static final Logger QUERY_STATE_LOG = Logger.get(QueryStateMachine.class);
 
     private final QueryId queryId;
     private final String query;
     private final Session session;
     private final URI self;
     private final Optional<QueryType> queryType;
-    private final Optional<ResourceGroupId> resourceGroup;
+    private final ResourceGroupId resourceGroup;
     private final TransactionManager transactionManager;
     private final Metadata metadata;
     private final QueryOutputManager outputManager;
@@ -155,7 +156,7 @@ public class QueryStateMachine
             String query,
             Session session,
             URI self,
-            Optional<ResourceGroupId> resourceGroup,
+            ResourceGroupId resourceGroup,
             Optional<QueryType> queryType,
             TransactionManager transactionManager,
             Executor executor,
@@ -235,7 +236,7 @@ public class QueryStateMachine
                 query,
                 session,
                 self,
-                Optional.of(resourceGroup),
+                resourceGroup,
                 queryType,
                 transactionManager,
                 executor,
@@ -344,6 +345,8 @@ public class QueryStateMachine
                 queryStateTimer.getElapsedTime(),
                 queryStateTimer.getExecutionTime(),
 
+                getPeakRunningTaskCount(),
+
                 stageStats.getTotalDrivers(),
                 stageStats.getQueuedDrivers(),
                 stageStats.getRunningDrivers(),
@@ -356,18 +359,23 @@ public class QueryStateMachine
                 stageStats.getUserMemoryReservation(),
                 stageStats.getTotalMemoryReservation(),
                 succinctBytes(getPeakUserMemoryInBytes()),
+                succinctBytes(getPeakTotalMemoryInBytes()),
+                succinctBytes(getPeakTaskTotalMemory()),
 
                 stageStats.getTotalCpuTime(),
                 stageStats.getTotalScheduledTime(),
 
                 stageStats.isFullyBlocked(),
                 stageStats.getBlockedReasons(),
+
+                stageStats.getTotalAllocation(),
+
                 stageStats.getProgressPercentage());
 
         return new BasicQueryInfo(
                 queryId,
                 session.toSessionRepresentation(),
-                resourceGroup,
+                Optional.of(resourceGroup),
                 state,
                 memoryPool.get().getId(),
                 stageStats.isScheduled(),
@@ -442,7 +450,7 @@ public class QueryStateMachine
                 inputs.get(),
                 output.get(),
                 completeInfo,
-                resourceGroup,
+                Optional.of(resourceGroup),
                 queryType,
                 failedTasks);
     }
@@ -465,7 +473,10 @@ public class QueryStateMachine
 
         long totalScheduledTime = 0;
         long totalCpuTime = 0;
+        long retriedCpuTime = 0;
         long totalBlockedTime = 0;
+
+        long totalAllocation = 0;
 
         long rawInputDataSize = 0;
         long rawInputPositions = 0;
@@ -506,11 +517,14 @@ public class QueryStateMachine
             totalMemoryReservation += stageExecutionStats.getTotalMemoryReservation().toBytes();
             totalScheduledTime += stageExecutionStats.getTotalScheduledTime().roundTo(MILLISECONDS);
             totalCpuTime += stageExecutionStats.getTotalCpuTime().roundTo(MILLISECONDS);
+            retriedCpuTime += computeRetriedCpuTime(stageInfo);
             totalBlockedTime += stageExecutionStats.getTotalBlockedTime().roundTo(MILLISECONDS);
             if (!stageInfo.getLatestAttemptExecutionInfo().getState().isDone()) {
                 fullyBlocked &= stageExecutionStats.isFullyBlocked();
                 blockedReasons.addAll(stageExecutionStats.getBlockedReasons());
             }
+
+            totalAllocation += stageExecutionStats.getTotalAllocation().toBytes();
 
             if (stageInfo.getPlan().isPresent()) {
                 PlanFragment plan = stageInfo.getPlan().get();
@@ -561,6 +575,7 @@ public class QueryStateMachine
                 queryStateTimer.getElapsedTime(),
                 queryStateTimer.getQueuedTime(),
                 queryStateTimer.getResourceWaitingTime(),
+                queryStateTimer.getDispatchingTime(),
                 queryStateTimer.getExecutionTime(),
                 queryStateTimer.getAnalysisTime(),
                 queryStateTimer.getPlanningTime(),
@@ -589,9 +604,12 @@ public class QueryStateMachine
 
                 succinctDuration(totalScheduledTime, MILLISECONDS),
                 succinctDuration(totalCpuTime, MILLISECONDS),
+                succinctDuration(retriedCpuTime, MILLISECONDS),
                 succinctDuration(totalBlockedTime, MILLISECONDS),
                 fullyBlocked,
                 blockedReasons,
+
+                succinctBytes(totalAllocation),
 
                 succinctBytes(rawInputDataSize),
                 rawInputPositions,
@@ -609,6 +627,15 @@ public class QueryStateMachine
                 stageGcStatistics.build(),
 
                 operatorStatsSummary.build());
+    }
+
+    private static long computeRetriedCpuTime(StageInfo stageInfo)
+    {
+        long stageRetriedCpuTime = stageInfo.getPreviousAttemptsExecutionInfos().stream()
+                .mapToLong(executionInfo -> executionInfo.getStats().getTotalCpuTime().roundTo(MILLISECONDS))
+                .sum();
+        long taskRetriedCpuTime = stageInfo.getLatestAttemptExecutionInfo().getStats().getRetriedCpuTime().roundTo(MILLISECONDS);
+        return stageRetriedCpuTime + taskRetriedCpuTime;
     }
 
     public VersionedMemoryPoolId getMemoryPool()
@@ -742,6 +769,12 @@ public class QueryStateMachine
     {
         queryStateTimer.beginWaitingForResources();
         return queryState.setIf(WAITING_FOR_RESOURCES, currentState -> currentState.ordinal() < WAITING_FOR_RESOURCES.ordinal());
+    }
+
+    public boolean transitionToDispatching()
+    {
+        queryStateTimer.beginDispatching();
+        return queryState.setIf(DISPATCHING, currentState -> currentState.ordinal() < DISPATCHING.ordinal());
     }
 
     public boolean transitionToPlanning()
@@ -1034,7 +1067,6 @@ public class QueryStateMachine
     private static StageExecutionInfo pruneStageExecutionInfo(StageExecutionInfo info)
     {
         return new StageExecutionInfo(
-                info.getStageExecutionId(),
                 info.getState(),
                 info.getStats(),
                 // Remove the tasks
@@ -1052,6 +1084,7 @@ public class QueryStateMachine
                 queryStats.getElapsedTime(),
                 queryStats.getQueuedTime(),
                 queryStats.getResourceWaitingTime(),
+                queryStats.getDispatchingTime(),
                 queryStats.getExecutionTime(),
                 queryStats.getAnalysisTime(),
                 queryStats.getTotalPlanningTime(),
@@ -1075,9 +1108,11 @@ public class QueryStateMachine
                 queryStats.isScheduled(),
                 queryStats.getTotalScheduledTime(),
                 queryStats.getTotalCpuTime(),
+                queryStats.getRetriedCpuTime(),
                 queryStats.getTotalBlockedTime(),
                 queryStats.isFullyBlocked(),
                 queryStats.getBlockedReasons(),
+                queryStats.getTotalAllocation(),
                 queryStats.getRawInputDataSize(),
                 queryStats.getRawInputPositions(),
                 queryStats.getProcessedInputDataSize(),

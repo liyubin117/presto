@@ -205,7 +205,7 @@ public class MockRemoteTaskFactory
                     scheduledExecutor,
                     new DataSize(1, MEGABYTE),
                     spillSpaceTracker);
-            this.taskContext = queryContext.addTaskContext(taskStateMachine, TEST_SESSION, true, true, false);
+            this.taskContext = queryContext.addTaskContext(taskStateMachine, TEST_SESSION, true, true, true, true, false);
 
             this.location = URI.create("fake://task/" + taskId);
 
@@ -257,6 +257,7 @@ public class MockRemoteTaskFactory
                             failures,
                             0,
                             0,
+                            0.0,
                             false,
                             new DataSize(0, BYTE),
                             new DataSize(0, BYTE),
@@ -290,6 +291,7 @@ public class MockRemoteTaskFactory
                     ImmutableList.of(),
                     stats.getQueuedPartitionedDrivers(),
                     stats.getRunningPartitionedDrivers(),
+                    0.0,
                     false,
                     stats.getPhysicalWrittenDataSize(),
                     stats.getUserMemoryReservation(),

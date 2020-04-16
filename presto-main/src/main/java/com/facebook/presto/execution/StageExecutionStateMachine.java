@@ -256,6 +256,8 @@ public class StageExecutionStateMachine
         boolean fullyBlocked = true;
         Set<BlockedReason> blockedReasons = new HashSet<>();
 
+        long totalAllocation = 0;
+
         for (TaskInfo taskInfo : taskInfos) {
             TaskState taskState = taskInfo.getTaskStatus().getState();
             TaskStats taskStats = taskInfo.getStats();
@@ -278,6 +280,8 @@ public class StageExecutionStateMachine
                 fullyBlocked &= taskStats.isFullyBlocked();
                 blockedReasons.addAll(taskStats.getBlockedReasons());
             }
+
+            totalAllocation += taskStats.getTotalAllocation().toBytes();
 
             if (containsTableScans) {
                 rawInputDataSize += taskStats.getRawInputDataSize().toBytes();
@@ -310,6 +314,8 @@ public class StageExecutionStateMachine
 
                 fullyBlocked,
                 blockedReasons,
+
+                succinctBytes(totalAllocation),
 
                 progressPercentage);
     }
@@ -346,7 +352,10 @@ public class StageExecutionStateMachine
 
         long totalScheduledTime = 0;
         long totalCpuTime = 0;
+        long retriedCpuTime = 0;
         long totalBlockedTime = 0;
+
+        long totalAllocation = 0;
 
         long rawInputDataSize = 0;
         long rawInputPositions = 0;
@@ -396,11 +405,16 @@ public class StageExecutionStateMachine
 
             totalScheduledTime += taskStats.getTotalScheduledTime().roundTo(NANOSECONDS);
             totalCpuTime += taskStats.getTotalCpuTime().roundTo(NANOSECONDS);
+            if (state == FINISHED && taskInfo.getTaskStatus().getState() == TaskState.FAILED) {
+                retriedCpuTime += taskStats.getTotalCpuTime().roundTo(NANOSECONDS);
+            }
             totalBlockedTime += taskStats.getTotalBlockedTime().roundTo(NANOSECONDS);
             if (!taskState.isDone()) {
                 fullyBlocked &= taskStats.isFullyBlocked();
                 blockedReasons.addAll(taskStats.getBlockedReasons());
             }
+
+            totalAllocation += taskStats.getTotalAllocation().toBytes();
 
             rawInputDataSize += taskStats.getRawInputDataSize().toBytes();
             rawInputPositions += taskStats.getRawInputPositions();
@@ -453,9 +467,12 @@ public class StageExecutionStateMachine
                 succinctBytes(peakUserMemoryReservation),
                 succinctDuration(totalScheduledTime, NANOSECONDS),
                 succinctDuration(totalCpuTime, NANOSECONDS),
+                succinctDuration(retriedCpuTime, NANOSECONDS),
                 succinctDuration(totalBlockedTime, NANOSECONDS),
                 fullyBlocked && runningTasks > 0,
                 blockedReasons,
+
+                succinctBytes(totalAllocation),
 
                 succinctBytes(rawInputDataSize),
                 rawInputPositions,
@@ -483,7 +500,6 @@ public class StageExecutionStateMachine
             failureInfo = Optional.of(failureCause.get());
         }
         return new StageExecutionInfo(
-                stageExecutionId,
                 state,
                 stageExecutionStats,
                 taskInfos,

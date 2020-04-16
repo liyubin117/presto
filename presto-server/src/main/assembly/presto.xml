@@ -65,6 +65,10 @@
             <outputDirectory>plugin/session-property-managers</outputDirectory>
         </fileSet>
         <fileSet>
+            <directory>${project.build.directory}/dependency/presto-function-namespace-managers-${project.version}</directory>
+            <outputDirectory>plugin/function-namespace-managers</outputDirectory>
+        </fileSet>
+        <fileSet>
             <directory>${project.build.directory}/dependency/presto-jmx-${project.version}</directory>
             <outputDirectory>plugin/jmx</outputDirectory>
         </fileSet>
@@ -167,6 +171,10 @@
         <fileSet>
             <directory>${project.build.directory}/dependency/presto-elasticsearch-${project.version}</directory>
             <outputDirectory>plugin/presto-elasticsearch</outputDirectory>
+        </fileSet>
+        <fileSet>
+            <directory>${project.build.directory}/dependency/presto-druid-${project.version}</directory>
+            <outputDirectory>plugin/presto-druid</outputDirectory>
         </fileSet>
     </fileSets>
 </assembly>

@@ -89,6 +89,9 @@ public class TaskContext
     private final boolean perOperatorCpuTimerEnabled;
     private final boolean cpuTimerEnabled;
 
+    private final boolean perOperatorAllocationTrackingEnabled;
+    private final boolean allocationTrackingEnabled;
+
     private final boolean legacyLifespanCompletionCondition;
 
     private final Object cumulativeMemoryLock = new Object();
@@ -113,6 +116,8 @@ public class TaskContext
             MemoryTrackingContext taskMemoryContext,
             boolean perOperatorCpuTimerEnabled,
             boolean cpuTimerEnabled,
+            boolean perOperatorAllocationTrackingEnabled,
+            boolean allocationTrackingEnabled,
             boolean legacyLifespanCompletionCondition)
     {
         TaskContext taskContext = new TaskContext(
@@ -125,6 +130,8 @@ public class TaskContext
                 taskMemoryContext,
                 perOperatorCpuTimerEnabled,
                 cpuTimerEnabled,
+                perOperatorAllocationTrackingEnabled,
+                allocationTrackingEnabled,
                 legacyLifespanCompletionCondition);
         taskContext.initialize();
         return taskContext;
@@ -139,6 +146,8 @@ public class TaskContext
             MemoryTrackingContext taskMemoryContext,
             boolean perOperatorCpuTimerEnabled,
             boolean cpuTimerEnabled,
+            boolean perOperatorAllocationTrackingEnabled,
+            boolean allocationTrackingEnabled,
             boolean legacyLifespanCompletionCondition)
     {
         this.taskStateMachine = requireNonNull(taskStateMachine, "taskStateMachine is null");
@@ -152,6 +161,8 @@ public class TaskContext
         taskMemoryContext.initializeLocalMemoryContexts(LazyOutputBuffer.class.getSimpleName());
         this.perOperatorCpuTimerEnabled = perOperatorCpuTimerEnabled;
         this.cpuTimerEnabled = cpuTimerEnabled;
+        this.perOperatorAllocationTrackingEnabled = perOperatorAllocationTrackingEnabled;
+        this.allocationTrackingEnabled = allocationTrackingEnabled;
         this.legacyLifespanCompletionCondition = legacyLifespanCompletionCondition;
     }
 
@@ -293,6 +304,16 @@ public class TaskContext
         pipelineContexts.forEach(PipelineContext::moreMemoryAvailable);
     }
 
+    public boolean isPerOperatorAllocationTrackingEnabled()
+    {
+        return perOperatorAllocationTrackingEnabled;
+    }
+
+    public boolean isAllocationTrackingEnabled()
+    {
+        return allocationTrackingEnabled;
+    }
+
     public boolean isPerOperatorCpuTimerEnabled()
     {
         return perOperatorCpuTimerEnabled;
@@ -401,6 +422,8 @@ public class TaskContext
         long totalCpuTime = 0;
         long totalBlockedTime = 0;
 
+        long totalAllocation = 0;
+
         long rawInputDataSize = 0;
         long rawInputPositions = 0;
 
@@ -428,6 +451,8 @@ public class TaskContext
             totalScheduledTime += pipeline.getTotalScheduledTime().roundTo(NANOSECONDS);
             totalCpuTime += pipeline.getTotalCpuTime().roundTo(NANOSECONDS);
             totalBlockedTime += pipeline.getTotalBlockedTime().roundTo(NANOSECONDS);
+
+            totalAllocation += pipeline.getTotalAllocation().toBytes();
 
             if (pipeline.isInputPipeline()) {
                 rawInputDataSize += pipeline.getRawInputDataSize().toBytes();
@@ -511,6 +536,7 @@ public class TaskContext
                 succinctNanos(totalBlockedTime),
                 fullyBlocked && (runningDrivers > 0 || runningPartitionedDrivers > 0),
                 blockedReasons,
+                succinctBytes(totalAllocation),
                 succinctBytes(rawInputDataSize),
                 rawInputPositions,
                 succinctBytes(processedInputDataSize),

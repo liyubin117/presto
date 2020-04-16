@@ -171,6 +171,7 @@ public final class HttpRemoteTask
 
     private final Codec<TaskInfo> taskInfoCodec;
     private final Codec<TaskUpdateRequest> taskUpdateRequestCodec;
+    private final Codec<PlanFragment> planFragmentCodec;
 
     private final RequestErrorTracker updateErrorTracker;
 
@@ -207,6 +208,7 @@ public final class HttpRemoteTask
             Codec<TaskStatus> taskStatusCodec,
             Codec<TaskInfo> taskInfoCodec,
             Codec<TaskUpdateRequest> taskUpdateRequestCodec,
+            Codec<PlanFragment> planFragmentCodec,
             PartitionedSplitCountTracker partitionedSplitCountTracker,
             RemoteTaskStats stats,
             boolean isBinaryTransportEnabled,
@@ -225,6 +227,7 @@ public final class HttpRemoteTask
         requireNonNull(taskStatusCodec, "taskStatusCodec is null");
         requireNonNull(taskInfoCodec, "taskInfoCodec is null");
         requireNonNull(taskUpdateRequestCodec, "taskUpdateRequestCodec is null");
+        requireNonNull(planFragmentCodec, "planFragmentCodec is null");
         requireNonNull(partitionedSplitCountTracker, "partitionedSplitCountTracker is null");
         requireNonNull(maxErrorDuration, "maxErrorDuration is null");
         requireNonNull(stats, "stats is null");
@@ -245,6 +248,7 @@ public final class HttpRemoteTask
             this.summarizeTaskInfo = summarizeTaskInfo;
             this.taskInfoCodec = taskInfoCodec;
             this.taskUpdateRequestCodec = taskUpdateRequestCodec;
+            this.planFragmentCodec = planFragmentCodec;
             this.updateErrorTracker = new RequestErrorTracker(taskId, location, maxErrorDuration, errorScheduledExecutor, "updating task");
             this.partitionedSplitCountTracker = requireNonNull(partitionedSplitCountTracker, "partitionedSplitCountTracker is null");
             this.maxErrorDuration = maxErrorDuration;
@@ -630,7 +634,7 @@ public final class HttpRemoteTask
 
         List<TaskSource> sources = getSources();
 
-        Optional<PlanFragment> fragment = sendPlan.get() ? Optional.of(planFragment) : Optional.empty();
+        Optional<byte[]> fragment = sendPlan.get() ? Optional.of(planFragment.toBytes(planFragmentCodec)) : Optional.empty();
         Optional<TableWriteInfo> writeInfo = sendPlan.get() ? Optional.of(tableWriteInfo) : Optional.empty();
         TaskUpdateRequest updateRequest = new TaskUpdateRequest(
                 session.toSessionRepresentation(),
@@ -642,7 +646,7 @@ public final class HttpRemoteTask
         byte[] taskUpdateRequestJson = taskUpdateRequestCodec.toBytes(updateRequest);
 
         if (taskUpdateRequestJson.length > maxTaskUpdateSizeInBytes) {
-            throw new PrestoException(EXCEEDED_TASK_UPDATE_SIZE_LIMIT, format("TaskUpdate size of %d Bytes has exceeded the limit of %d Bytes", taskUpdateRequestJson.length, maxTaskUpdateSizeInBytes));
+            failTask(new PrestoException(EXCEEDED_TASK_UPDATE_SIZE_LIMIT, format("TaskUpdate size of %d Bytes has exceeded the limit of %d Bytes", taskUpdateRequestJson.length, maxTaskUpdateSizeInBytes)));
         }
 
         if (fragment.isPresent()) {
@@ -735,7 +739,8 @@ public final class HttpRemoteTask
 
         // cancel pending request
         if (currentRequest != null) {
-            currentRequest.cancel(true);
+            // do not terminate if the request is already running to avoid closing pooled connections
+            currentRequest.cancel(false);
             currentRequest = null;
             currentRequestStartNanos = 0;
         }
@@ -767,10 +772,6 @@ public final class HttpRemoteTask
         checkState(status.getState().isDone(), "cannot abort task with an incomplete status");
 
         try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
-            // With recoverable grouped execution, failed task does not necessarily fail the whole query.
-            // Not updating task info makes query unable to finish in tests because failed task is stuck in RUNNING state.
-            // TODO: Investigate why this only happens in TestHiveRecoverableGroupedExecution when worker is closed, but not in production test via cli.
-            taskInfoFetcher.updateTaskInfo(getTaskInfo().withTaskStatus(status));
             taskStatusFetcher.updateTaskStatus(status);
 
             // send abort to task
@@ -876,7 +877,15 @@ public final class HttpRemoteTask
             log.debug(cause, "Remote task %s failed with %s", taskStatus.getSelf(), cause);
         }
 
-        abort(failWith(getTaskStatus(), FAILED, ImmutableList.of(toFailure(cause))));
+        TaskStatus failedTaskStatus = failWith(getTaskStatus(), FAILED, ImmutableList.of(toFailure(cause)));
+        // Transition task to failed state without waiting for the final task info returned by the abort request.
+        // The abort request is very likely not to succeed, leaving the task and the stage in the limbo state for
+        // the entire duration of abort retries. If the task is failed, it is not that important to actually
+        // record the final statistics and the final information about a failed task.
+        taskInfoFetcher.updateTaskInfo(getTaskInfo().withTaskStatus(failedTaskStatus));
+
+        // Initiate abort request
+        abort(failedTaskStatus);
     }
 
     private HttpUriBuilder getHttpUriBuilder(TaskStatus taskStatus)

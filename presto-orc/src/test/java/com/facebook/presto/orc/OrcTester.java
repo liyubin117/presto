@@ -123,7 +123,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcReader.MAX_BATCH_SIZE;
 import static com.facebook.presto.orc.OrcTester.Format.DWRF;
 import static com.facebook.presto.orc.OrcTester.Format.ORC_11;
@@ -312,7 +312,7 @@ public class OrcTester
         orcTester.nullTestsEnabled = true;
         orcTester.skipBatchTestsEnabled = true;
         orcTester.formats = ImmutableSet.of(ORC_12, ORC_11, DWRF);
-        orcTester.compressions = ImmutableSet.of(ZLIB);
+        orcTester.compressions = ImmutableSet.of(ZLIB, ZSTD);
         orcTester.useSelectiveOrcReader = true;
 
         return orcTester;
@@ -876,7 +876,7 @@ public class OrcTester
             return;
         }
 
-        try (OrcBatchRecordReader recordReader = createCustomOrcRecordReader(tempFile, orcEncoding, orcPredicate, types, MAX_BATCH_SIZE, new StorageOrcFileTailSource(), new StorageStripeMetadataSource())) {
+        try (OrcBatchRecordReader recordReader = createCustomOrcRecordReader(tempFile, orcEncoding, orcPredicate, types, MAX_BATCH_SIZE, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), false)) {
             assertEquals(recordReader.getReaderPosition(), 0);
             assertEquals(recordReader.getFilePosition(), 0);
 
@@ -1278,10 +1278,16 @@ public class OrcTester
         }
     }
 
-    static OrcBatchRecordReader createCustomOrcRecordReader(TempFile tempFile, OrcEncoding orcEncoding, OrcPredicate predicate, Type type, int initialBatchSize)
+    static OrcBatchRecordReader createCustomOrcRecordReader(TempFile tempFile, OrcEncoding orcEncoding, OrcPredicate predicate, Type type, int initialBatchSize, boolean cacheable)
             throws IOException
     {
-        return createCustomOrcRecordReader(tempFile, orcEncoding, predicate, ImmutableList.of(type), initialBatchSize, new StorageOrcFileTailSource(), new StorageStripeMetadataSource());
+        return createCustomOrcRecordReader(tempFile, orcEncoding, predicate, ImmutableList.of(type), initialBatchSize, cacheable);
+    }
+
+    static OrcBatchRecordReader createCustomOrcRecordReader(TempFile tempFile, OrcEncoding orcEncoding, OrcPredicate predicate, List<Type> types, int initialBatchSize, boolean cacheable)
+            throws IOException
+    {
+        return createCustomOrcRecordReader(tempFile, orcEncoding, predicate, types, initialBatchSize, new StorageOrcFileTailSource(), new StorageStripeMetadataSource(), cacheable);
     }
 
     static OrcBatchRecordReader createCustomOrcRecordReader(
@@ -1291,7 +1297,8 @@ public class OrcTester
             List<Type> types,
             int initialBatchSize,
             OrcFileTailSource orcFileTailSource,
-            StripeMetadataSource stripeMetadataSource)
+            StripeMetadataSource stripeMetadataSource,
+            boolean cacheable)
             throws IOException
     {
         OrcDataSource orcDataSource = new FileOrcDataSource(tempFile.getFile(), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), true);
@@ -1300,20 +1307,21 @@ public class OrcTester
                 orcEncoding,
                 orcFileTailSource,
                 stripeMetadataSource,
+                NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
                 new OrcReaderOptions(
                         new DataSize(1, MEGABYTE),
                         new DataSize(1, MEGABYTE),
                         MAX_BLOCK_SIZE,
-                        false));
+                        false),
+                cacheable);
 
-        assertEquals(orcReader.getColumnNames(), ImmutableList.of("test"));
         assertEquals(orcReader.getFooter().getRowsInRowGroup(), 10_000);
 
         Map<Integer, Type> columnTypes = IntStream.range(0, types.size())
                 .boxed()
                 .collect(toImmutableMap(Functions.identity(), types::get));
 
-        return orcReader.createBatchRecordReader(columnTypes, predicate, HIVE_STORAGE_TIME_ZONE, newSimpleAggregatedMemoryContext(), initialBatchSize);
+        return orcReader.createBatchRecordReader(columnTypes, predicate, HIVE_STORAGE_TIME_ZONE, new TestingHiveOrcAggregatedMemoryContext(), initialBatchSize);
     }
 
     public static void writeOrcColumnPresto(File outputFile, Format format, CompressionKind compression, Type type, List<?> values)
@@ -1332,7 +1340,7 @@ public class OrcTester
         metadata.put("columns.types", createSettableStructObjectInspector(types).getTypeName());
 
         OrcWriter writer = new OrcWriter(
-                new OutputStreamOrcDataSink(new FileOutputStream(outputFile)),
+                new OutputStreamDataSink(new FileOutputStream(outputFile)),
                 columnNames,
                 types,
                 format.getOrcEncoding(),
@@ -1356,7 +1364,12 @@ public class OrcTester
 
         writer.write(new Page(blocks));
         writer.close();
-        writer.validate(new FileOrcDataSource(outputFile, new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), new DataSize(1, MEGABYTE), true));
+        writer.validate(new FileOrcDataSource(
+                outputFile,
+                new DataSize(1, MEGABYTE),
+                new DataSize(1, MEGABYTE),
+                new DataSize(1, MEGABYTE),
+                true));
     }
 
     private static OrcSelectiveRecordReader createCustomOrcSelectiveRecordReader(
@@ -1377,11 +1390,13 @@ public class OrcTester
                 orcEncoding,
                 new StorageOrcFileTailSource(),
                 new StorageStripeMetadataSource(),
+                NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
                 new OrcReaderOptions(
                         new DataSize(1, MEGABYTE),
                         new DataSize(1, MEGABYTE),
                         MAX_BLOCK_SIZE,
-                        false));
+                        false),
+                false);
 
         assertEquals(orcReader.getColumnNames().subList(0, types.size()), makeColumnNames(types.size()));
         assertEquals(orcReader.getFooter().getRowsInRowGroup(), 10_000);
@@ -1404,7 +1419,7 @@ public class OrcTester
                 orcDataSource.getSize(),
                 HIVE_STORAGE_TIME_ZONE,
                 LEGACY_MAP_SUBSCRIPT,
-                newSimpleAggregatedMemoryContext(),
+                new TestingHiveOrcAggregatedMemoryContext(),
                 Optional.empty(),
                 initialBatchSize);
     }
@@ -1969,7 +1984,7 @@ public class OrcTester
         return createOrcRecordWriter(outputFile, format, compression, ImmutableList.of(type));
     }
 
-    private static RecordWriter createOrcRecordWriter(File outputFile, Format format, CompressionKind compression, List<Type> types)
+    static RecordWriter createOrcRecordWriter(File outputFile, Format format, CompressionKind compression, List<Type> types)
             throws IOException
     {
         JobConf jobConf = new JobConf();
@@ -2009,7 +2024,7 @@ public class OrcTester
         return getStandardStructObjectInspector(ImmutableList.of(name), ImmutableList.of(getJavaObjectInspector(type)));
     }
 
-    private static SettableStructObjectInspector createSettableStructObjectInspector(List<Type> types)
+    static SettableStructObjectInspector createSettableStructObjectInspector(List<Type> types)
     {
         List<ObjectInspector> columnTypes = types.stream()
                 .map(OrcTester::getJavaObjectInspector)

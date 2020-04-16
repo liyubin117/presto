@@ -110,6 +110,7 @@ public class PrestoSparkQueryRunner
                         "presto.version", "testversion",
                         "query.hash-partition-count", Integer.toString(nodeCount * 2),
                         "redistribute-writes", "false"),
+                ImmutableMap.of(),
                 ImmutableList.of());
 
         Injector injector = injectorFactory.create();
@@ -133,7 +134,8 @@ public class PrestoSparkQueryRunner
 
         SparkConf sparkConfiguration = new SparkConf()
                 .setMaster(format("local[%s]", nodeCount))
-                .setAppName("presto");
+                .setAppName("presto")
+                .set("spark.driver.host", "localhost");
         sparkContext = new SparkContext(sparkConfiguration);
         prestoSparkService = injector.getInstance(PrestoSparkService.class);
 
@@ -307,6 +309,12 @@ public class PrestoSparkQueryRunner
     public void createCatalog(String catalogName, String connectorName, Map<String, String> properties)
     {
         connectorManager.createConnection(catalogName, connectorName, properties);
+    }
+
+    @Override
+    public void loadFunctionNamespaceManager(String functionNamespaceManagerName, String catalogName, Map<String, String> properties)
+    {
+        metadata.getFunctionManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
     }
 
     @Override

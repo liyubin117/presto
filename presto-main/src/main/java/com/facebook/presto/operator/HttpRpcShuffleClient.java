@@ -20,8 +20,8 @@ import com.facebook.airlift.http.client.Response;
 import com.facebook.airlift.http.client.ResponseHandler;
 import com.facebook.airlift.http.client.ResponseTooLargeException;
 import com.facebook.airlift.log.Logger;
-import com.facebook.presto.execution.buffer.SerializedPage;
 import com.facebook.presto.operator.PageBufferClient.PagesResponse;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.collect.ImmutableList;
 import com.google.common.net.MediaType;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -36,6 +36,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.util.List;
+import java.util.Optional;
 
 import static com.facebook.airlift.http.client.HttpStatus.familyForStatusCode;
 import static com.facebook.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
@@ -49,9 +50,9 @@ import static com.facebook.presto.client.PrestoHeaders.PRESTO_MAX_SIZE;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_PAGE_NEXT_TOKEN;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_PAGE_TOKEN;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_TASK_INSTANCE_ID;
-import static com.facebook.presto.execution.buffer.PagesSerdeUtil.readSerializedPages;
 import static com.facebook.presto.operator.PageBufferClient.PagesResponse.createEmptyPagesResponse;
 import static com.facebook.presto.operator.PageBufferClient.PagesResponse.createPagesResponse;
+import static com.facebook.presto.spi.page.PagesSerdeUtil.readSerializedPages;
 import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -65,17 +66,25 @@ public final class HttpRpcShuffleClient
 
     private final HttpClient httpClient;
     private final URI location;
+    private final Optional<URI> asyncPageTransportLocation;
 
     public HttpRpcShuffleClient(HttpClient httpClient, URI location)
     {
+        this(httpClient, location, Optional.empty());
+    }
+
+    public HttpRpcShuffleClient(HttpClient httpClient, URI location, Optional<URI> asyncPageTransportLocation)
+    {
         this.httpClient = requireNonNull(httpClient, "httpClient is null");
         this.location = requireNonNull(location, "location is null");
+        this.asyncPageTransportLocation = requireNonNull(asyncPageTransportLocation, "asyncPageTransportLocation is null");
     }
 
     @Override
     public ListenableFuture<PagesResponse> getResults(long token, DataSize maxResponseSize)
     {
-        URI uri = uriBuilderFrom(location).appendPath(String.valueOf(token)).build();
+        URI uriBase = asyncPageTransportLocation.orElse(location);
+        URI uri = uriBuilderFrom(uriBase).appendPath(String.valueOf(token)).build();
         return httpClient.executeAsync(
                 prepareGet()
                         .setHeader(PRESTO_MAX_SIZE, maxResponseSize.toString())

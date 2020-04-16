@@ -151,6 +151,7 @@ public class QueryMonitor
                         ofMillis(0),
                         ofMillis(0),
                         ofMillis(0),
+                        ofMillis(queryInfo.getQueryStats().getQueuedTime().toMillis()),
                         Optional.empty(),
                         0,
                         0,
@@ -178,7 +179,7 @@ public class QueryMonitor
                 queryInfo.getQueryType(),
                 ImmutableList.of(),
                 ofEpochMilli(queryInfo.getQueryStats().getCreateTime().getMillis()),
-                ofEpochMilli(queryInfo.getQueryStats().getCreateTime().getMillis()),
+                ofEpochMilli(queryInfo.getQueryStats().getEndTime().getMillis()),
                 ofEpochMilli(queryInfo.getQueryStats().getEndTime().getMillis())));
 
         logQueryTimeline(queryInfo);
@@ -256,6 +257,7 @@ public class QueryMonitor
 
         return new QueryStatistics(
                 ofMillis(queryStats.getTotalCpuTime().toMillis()),
+                ofMillis(queryStats.getRetriedCpuTime().toMillis()),
                 ofMillis(queryStats.getTotalScheduledTime().toMillis()),
                 ofMillis(queryStats.getQueuedTime().toMillis()),
                 Optional.of(ofMillis(queryStats.getAnalysisTime().toMillis())),

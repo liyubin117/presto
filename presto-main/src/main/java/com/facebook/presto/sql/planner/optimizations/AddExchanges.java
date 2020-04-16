@@ -26,6 +26,7 @@ import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.spi.plan.Assignments;
 import com.facebook.presto.spi.plan.FilterNode;
 import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.MarkDistinctNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.ProjectNode;
@@ -60,7 +61,6 @@ import com.facebook.presto.sql.planner.plan.IndexSourceNode;
 import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
-import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
@@ -107,6 +107,7 @@ import static com.facebook.presto.SystemSessionProperties.isExactPartitioningPre
 import static com.facebook.presto.SystemSessionProperties.isForceSingleNodeOutput;
 import static com.facebook.presto.SystemSessionProperties.isRedistributeWrites;
 import static com.facebook.presto.SystemSessionProperties.isScaleWriters;
+import static com.facebook.presto.SystemSessionProperties.isUseStreamingExchangeForMarkDistinctEnabled;
 import static com.facebook.presto.SystemSessionProperties.preferStreamingOperators;
 import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
 import static com.facebook.presto.operator.aggregation.AggregationUtils.hasSingleNodeExecutionPreference;
@@ -321,7 +322,9 @@ public class AddExchanges
                 child = withDerivedProperties(
                         partitionedExchange(
                                 idAllocator.getNextId(),
-                                selectExchangeScopeForPartitionedRemoteExchange(child.getNode(), false),
+                                isUseStreamingExchangeForMarkDistinctEnabled(session) ?
+                                        REMOTE_STREAMING :
+                                        selectExchangeScopeForPartitionedRemoteExchange(child.getNode(), false),
                                 child.getNode(),
                                 createPartitioning(node.getDistinctVariables()),
                                 node.getHashVariable()),
@@ -557,7 +560,9 @@ public class AddExchanges
         @Override
         public PlanWithProperties visitFilter(FilterNode node, PreferredProperties preferredProperties)
         {
-            if (node.getSource() instanceof TableScanNode) {
+            if (node.getSource() instanceof TableScanNode && metadata.isLegacyGetLayoutSupported(session, ((TableScanNode) node.getSource()).getTable())) {
+                // If isLegacyGetLayoutSupported, then we can continue with legacy predicate pushdown logic.
+                // Otherwise, we leave the filter as is in the plan as it will be pushed into the TableScan by filter pushdown logic in the connector.
                 return planTableScan((TableScanNode) node.getSource(), node.getPredicate());
             }
 
@@ -575,27 +580,31 @@ public class AddExchanges
         {
             PlanWithProperties source = node.getSource().accept(this, preferredProperties);
 
-            Optional<PartitioningScheme> partitioningScheme = node.getPartitioningScheme();
-            if (!partitioningScheme.isPresent()) {
+            Optional<PartitioningScheme> shufflePartitioningScheme = node.getTablePartitioningScheme();
+            if (!shufflePartitioningScheme.isPresent()) {
+                shufflePartitioningScheme = node.getPreferredShufflePartitioningScheme();
+            }
+
+            if (!shufflePartitioningScheme.isPresent()) {
                 if (scaleWriters) {
-                    partitioningScheme = Optional.of(new PartitioningScheme(Partitioning.create(SCALED_WRITER_DISTRIBUTION, ImmutableList.of()), source.getNode().getOutputVariables()));
+                    shufflePartitioningScheme = Optional.of(new PartitioningScheme(Partitioning.create(SCALED_WRITER_DISTRIBUTION, ImmutableList.of()), source.getNode().getOutputVariables()));
                 }
                 else if (redistributeWrites) {
-                    partitioningScheme = Optional.of(new PartitioningScheme(Partitioning.create(FIXED_ARBITRARY_DISTRIBUTION, ImmutableList.of()), source.getNode().getOutputVariables()));
+                    shufflePartitioningScheme = Optional.of(new PartitioningScheme(Partitioning.create(FIXED_ARBITRARY_DISTRIBUTION, ImmutableList.of()), source.getNode().getOutputVariables()));
                 }
             }
 
-            if (partitioningScheme.isPresent() &&
+            if (shufflePartitioningScheme.isPresent() &&
                     // TODO: Deprecate compatible table partitioning
-                    !source.getProperties().isCompatibleTablePartitioningWith(partitioningScheme.get().getPartitioning(), false, metadata, session) &&
-                    !(source.getProperties().isRefinedPartitioningOver(partitioningScheme.get().getPartitioning(), false, metadata, session) &&
+                    !source.getProperties().isCompatibleTablePartitioningWith(shufflePartitioningScheme.get().getPartitioning(), false, metadata, session) &&
+                    !(source.getProperties().isRefinedPartitioningOver(shufflePartitioningScheme.get().getPartitioning(), false, metadata, session) &&
                             canPushdownPartialMerge(source.getNode(), partialMergePushdownStrategy))) {
                 source = withDerivedProperties(
                         partitionedExchange(
                                 idAllocator.getNextId(),
                                 REMOTE_STREAMING,
                                 source.getNode(),
-                                partitioningScheme.get()),
+                                shufflePartitioningScheme.get()),
                         source.getProperties());
             }
             return rebaseAndDeriveProperties(node, source);

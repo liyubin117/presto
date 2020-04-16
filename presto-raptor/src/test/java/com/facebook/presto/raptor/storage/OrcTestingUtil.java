@@ -25,9 +25,10 @@ import com.facebook.presto.orc.OrcPredicate;
 import com.facebook.presto.orc.OrcReader;
 import com.facebook.presto.orc.OrcReaderOptions;
 import com.facebook.presto.orc.OrcWriterStats;
-import com.facebook.presto.orc.OutputStreamOrcDataSink;
+import com.facebook.presto.orc.OutputStreamDataSink;
 import com.facebook.presto.orc.StorageStripeMetadataSource;
 import com.facebook.presto.orc.cache.StorageOrcFileTailSource;
+import com.facebook.presto.raptor.RaptorOrcAggregatedMemoryContext;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.type.TypeRegistry;
@@ -42,7 +43,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcReader.MAX_BATCH_SIZE;
 import static com.facebook.presto.orc.metadata.CompressionKind.ZSTD;
@@ -68,7 +68,9 @@ final class OrcTestingUtil
                 ORC,
                 new StorageOrcFileTailSource(),
                 new StorageStripeMetadataSource(),
-                createDefaultTestConfig());
+                new RaptorOrcAggregatedMemoryContext(),
+                createDefaultTestConfig(),
+                false);
 
         List<String> columnNames = orcReader.getColumnNames();
         assertEquals(columnNames.size(), columnIds.size());
@@ -92,7 +94,12 @@ final class OrcTestingUtil
         TypeRegistry typeRegistry = new TypeRegistry();
         typeRegistry.setFunctionManager(functionManager);
         StorageTypeConverter storageTypeConverter = new StorageTypeConverter(typeRegistry);
-        return orcReader.createBatchRecordReader(storageTypeConverter.toStorageTypes(includedColumns), OrcPredicate.TRUE, DateTimeZone.UTC, newSimpleAggregatedMemoryContext(), MAX_BATCH_SIZE);
+        return orcReader.createBatchRecordReader(
+                storageTypeConverter.toStorageTypes(includedColumns),
+                OrcPredicate.TRUE,
+                DateTimeZone.UTC,
+                new RaptorOrcAggregatedMemoryContext(),
+                MAX_BATCH_SIZE);
     }
 
     public static byte[] octets(int... values)
@@ -116,7 +123,7 @@ final class OrcTestingUtil
     {
         TypeRegistry typeManager = new TypeRegistry();
         new FunctionManager(typeManager, new BlockEncodingManager(typeManager), new FeaturesConfig());
-        return new OrcFileWriter(columnIds, columnTypes, new OutputStreamOrcDataSink(new FileOutputStream(file)), true, true, new OrcWriterStats(), typeManager, ZSTD);
+        return new OrcFileWriter(columnIds, columnTypes, new OutputStreamDataSink(new FileOutputStream(file)), true, true, new OrcWriterStats(), typeManager, ZSTD);
     }
 
     public static OrcReaderOptions createDefaultTestConfig()

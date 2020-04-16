@@ -14,11 +14,11 @@
 package com.facebook.presto.verifier.framework;
 
 import com.facebook.presto.spi.type.ArrayType;
+import com.facebook.presto.spi.type.MapType;
 import com.facebook.presto.spi.type.RowType;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.sql.tree.Identifier;
-import com.google.common.annotations.VisibleForTesting;
+import com.facebook.presto.sql.tree.Expression;
 import com.google.common.collect.ImmutableSet;
 
 import java.sql.ResultSet;
@@ -31,6 +31,7 @@ import static com.facebook.presto.spi.type.RealType.REAL;
 import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.verifier.framework.Column.Category.ARRAY;
 import static com.facebook.presto.verifier.framework.Column.Category.FLOATING_POINT;
+import static com.facebook.presto.verifier.framework.Column.Category.MAP;
 import static com.facebook.presto.verifier.framework.Column.Category.ROW;
 import static com.facebook.presto.verifier.framework.Column.Category.SIMPLE;
 import static com.facebook.presto.verifier.framework.VerifierUtil.delimitedIdentifier;
@@ -44,18 +45,20 @@ public class Column
         FLOATING_POINT,
         ARRAY,
         ROW,
+        MAP,
     }
 
     private static final Set<Type> FLOATING_POINT_TYPES = ImmutableSet.of(DOUBLE, REAL);
 
     private final String name;
+    private final Expression expression;
     private final Category category;
     private final Type type;
 
-    @VisibleForTesting
-    public Column(String name, Category category, Type type)
+    private Column(String name, Expression expression, Category category, Type type)
     {
         this.name = requireNonNull(name, "name is null");
+        this.expression = requireNonNull(expression, "expression is null");
         this.category = requireNonNull(category, "kind is null");
         this.type = requireNonNull(type, "type is null");
     }
@@ -65,9 +68,9 @@ public class Column
         return name;
     }
 
-    public Identifier getIdentifier()
+    public Expression getExpression()
     {
-        return delimitedIdentifier(name);
+        return expression;
     }
 
     public Category getCategory()
@@ -83,7 +86,13 @@ public class Column
     public static Column fromResultSet(TypeManager typeManager, ResultSet resultSet)
             throws SQLException
     {
+        String columnName = resultSet.getString("Column");
         Type type = typeManager.getType(parseTypeSignature(resultSet.getString("Type")));
+        return create(columnName, delimitedIdentifier(columnName), type);
+    }
+
+    public static Column create(String name, Expression expression, Type type)
+    {
         Category category;
         if (FLOATING_POINT_TYPES.contains(type)) {
             category = FLOATING_POINT;
@@ -91,13 +100,16 @@ public class Column
         else if (type instanceof ArrayType) {
             category = ARRAY;
         }
+        else if (type instanceof MapType) {
+            category = MAP;
+        }
         else if (type instanceof RowType) {
             category = ROW;
         }
         else {
             category = SIMPLE;
         }
-        return new Column(resultSet.getString("Column"), category, type);
+        return new Column(name, expression, category, type);
     }
 
     @Override

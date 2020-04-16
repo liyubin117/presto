@@ -44,11 +44,7 @@ public class VerifierConfig
 
     private double relativeErrorMargin = 1e-4;
     private double absoluteErrorMargin = 1e-12;
-    private boolean runTeardownOnResultMismatch;
-    private boolean runTeardownForDeterminismAnalysis;
-
-    private int maxDeterminismAnalysisRuns = 2;
-    private boolean enableLimitQueryDeterminismAnalyzer = true;
+    private boolean smartTeardown;
     private int verificationResubmissionLimit = 2;
 
     @NotNull
@@ -222,54 +218,16 @@ public class VerifierConfig
         return this;
     }
 
-    public boolean isRunTeardownOnResultMismatch()
+    public boolean isSmartTeardown()
     {
-        return runTeardownOnResultMismatch;
+        return smartTeardown;
     }
 
-    @ConfigDescription("When set to false, temporary tables are not dropped in case of checksum failure")
-    @Config("run-teardown-on-result-mismatch")
-    public VerifierConfig setRunTeardownOnResultMismatch(boolean runTeardownOnResultMismatch)
+    @ConfigDescription("When set to false, temporary tables are not dropped if verification fails and both control and test query succeeds")
+    @Config("smart-teardown")
+    public VerifierConfig setSmartTeardown(boolean smartTeardown)
     {
-        this.runTeardownOnResultMismatch = runTeardownOnResultMismatch;
-        return this;
-    }
-
-    public boolean isRunTeardownForDeterminismAnalysis()
-    {
-        return runTeardownForDeterminismAnalysis;
-    }
-
-    @ConfigDescription("When set to false, temporary tables are not dropped for determinism analysis runs")
-    @Config("run-teardown-for-determinism-analysis")
-    public VerifierConfig setRunTeardownForDeterminismAnalysis(boolean runTeardownForDeterminismAnalysis)
-    {
-        this.runTeardownForDeterminismAnalysis = runTeardownForDeterminismAnalysis;
-        return this;
-    }
-
-    @Min(0)
-    public int getMaxDeterminismAnalysisRuns()
-    {
-        return maxDeterminismAnalysisRuns;
-    }
-
-    @Config("max-determinism-analysis-runs")
-    public VerifierConfig setMaxDeterminismAnalysisRuns(int maxDeterminismAnalysisRuns)
-    {
-        this.maxDeterminismAnalysisRuns = maxDeterminismAnalysisRuns;
-        return this;
-    }
-
-    public boolean isEnableLimitQueryDeterminismAnalyzer()
-    {
-        return enableLimitQueryDeterminismAnalyzer;
-    }
-
-    @Config("enable-limit-query-determinism-analyzer")
-    public VerifierConfig setEnableLimitQueryDeterminismAnalyzer(boolean enableLimitQueryDeterminismAnalyzer)
-    {
-        this.enableLimitQueryDeterminismAnalyzer = enableLimitQueryDeterminismAnalyzer;
+        this.smartTeardown = smartTeardown;
         return this;
     }
 

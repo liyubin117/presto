@@ -46,7 +46,7 @@ import com.google.common.primitives.Shorts;
 import com.google.common.primitives.SignedBytes;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.FilterFileSystem;
+import org.apache.hadoop.fs.HadoopExtendedFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.viewfs.ViewFileSystem;
 import org.apache.hadoop.hive.common.type.HiveVarchar;
@@ -98,10 +98,10 @@ import java.util.Optional;
 import java.util.Properties;
 
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_DATABASE_LOCATION_ERROR;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_SERDE_NOT_FOUND;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_DATA_ERROR;
 import static com.facebook.presto.hive.HiveSessionProperties.getTemporaryStagingDirectoryPath;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_FILESYSTEM_ERROR;
 import static com.facebook.presto.hive.ParquetRecordWriterUtil.createParquetWriter;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.createDirectory;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.getField;
@@ -396,8 +396,8 @@ public final class HiveWriteUtils
 
     private static FileSystem getRawFileSystem(FileSystem fileSystem)
     {
-        if (fileSystem instanceof FilterFileSystem) {
-            return getRawFileSystem(((FilterFileSystem) fileSystem).getRawFileSystem());
+        if (fileSystem instanceof HadoopExtendedFileSystem) {
+            return getRawFileSystem(((HadoopExtendedFileSystem) fileSystem).getRawFileSystem());
         }
         return fileSystem;
     }

@@ -18,10 +18,10 @@ import com.facebook.airlift.http.client.Response;
 import com.facebook.airlift.http.client.testing.TestingHttpClient;
 import com.facebook.presto.block.BlockAssertions;
 import com.facebook.presto.execution.TaskId;
-import com.facebook.presto.execution.buffer.PagesSerde;
-import com.facebook.presto.execution.buffer.SerializedPage;
 import com.facebook.presto.memory.context.SimpleLocalMemoryContext;
 import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.page.PagesSerde;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -120,6 +120,7 @@ public class TestExchangeClient
                 1,
                 new Duration(1, MINUTES),
                 true,
+                false,
                 0.2,
                 new TestingHttpClient(processor, scheduler),
                 new TestingDriftClient<>(),
@@ -161,6 +162,7 @@ public class TestExchangeClient
                 1,
                 new Duration(1, MINUTES),
                 true,
+                false,
                 0.2,
                 new TestingHttpClient(processor, testingHttpClientExecutor),
                 new TestingDriftClient<>(),
@@ -235,6 +237,7 @@ public class TestExchangeClient
                 1,
                 new Duration(1, MINUTES),
                 true,
+                false,
                 0.2,
                 new TestingHttpClient(processor, testingHttpClientExecutor),
                 new TestingDriftClient<>(),
@@ -319,6 +322,7 @@ public class TestExchangeClient
                 1,
                 new Duration(1, MINUTES),
                 true,
+                false,
                 0.2,
                 new TestingHttpClient(processor, testingHttpClientExecutor),
                 new TestingDriftClient<>(),
@@ -385,6 +389,7 @@ public class TestExchangeClient
                 1,
                 new Duration(1, MINUTES),
                 true,
+                false,
                 0.2,
                 new TestingHttpClient(processor, testingHttpClientExecutor),
                 new TestingDriftClient<>(),
@@ -462,6 +467,7 @@ public class TestExchangeClient
                 1,
                 new Duration(1, MINUTES),
                 true,
+                false,
                 0.2,
                 new TestingHttpClient(processor, testingHttpClientExecutor),
                 new TestingDriftClient<>(),

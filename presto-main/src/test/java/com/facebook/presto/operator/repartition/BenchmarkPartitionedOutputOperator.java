@@ -21,7 +21,6 @@ import com.facebook.presto.execution.buffer.BufferState;
 import com.facebook.presto.execution.buffer.OutputBuffers;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
 import com.facebook.presto.execution.buffer.PartitionedOutputBuffer;
-import com.facebook.presto.execution.buffer.SerializedPage;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.memory.context.SimpleLocalMemoryContext;
 import com.facebook.presto.operator.BucketPartitionFunction;
@@ -33,9 +32,11 @@ import com.facebook.presto.operator.exchange.LocalPartitionGenerator;
 import com.facebook.presto.operator.repartition.OptimizedPartitionedOutputOperator.OptimizedPartitionedOutputFactory;
 import com.facebook.presto.operator.repartition.PartitionedOutputOperator.PartitionedOutputFactory;
 import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.type.ArrayType;
 import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.sql.planner.OutputPartitioning;
 import com.facebook.presto.testing.TestingTaskContext;
 import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
@@ -56,6 +57,7 @@ import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.openjdk.jmh.runner.options.VerboseMode;
+import org.testng.annotations.Test;
 
 import java.util.List;
 import java.util.Optional;
@@ -124,6 +126,22 @@ public class BenchmarkPartitionedOutputOperator
         operator.finish();
     }
 
+    @Test
+    public void verifyAddPage()
+    {
+        BenchmarkData data = new BenchmarkData();
+        data.setup();
+        new BenchmarkPartitionedOutputOperator().addPage(data);
+    }
+
+    @Test
+    public void verifyOptimizedAddPage()
+    {
+        BenchmarkData data = new BenchmarkData();
+        data.setup();
+        new BenchmarkPartitionedOutputOperator().optimizedAddPage(data);
+    }
+
     @State(Scope.Thread)
     public static class BenchmarkData
     {
@@ -138,11 +156,9 @@ public class BenchmarkPartitionedOutputOperator
         @Param({"true", "false"})
         private boolean enableCompression;
 
-        @SuppressWarnings("unused")
         @Param({"1", "2"})
-        private int channelCount;
+        private int channelCount = 1;
 
-        @SuppressWarnings("unused")
         @Param({
                 "BIGINT",
                 "DICTIONARY(BIGINT)",
@@ -158,8 +174,9 @@ public class BenchmarkPartitionedOutputOperator
                 "MAP(BIGINT,BIGINT)",
                 "MAP(BIGINT,MAP(BIGINT,BIGINT))",
                 "ROW(BIGINT,BIGINT)",
-                "ROW(ARRAY(BIGINT),ARRAY(BIGINT))"})
-        private String type;
+                "ROW(ARRAY(BIGINT),ARRAY(BIGINT))"
+        })
+        private String type = "BIGINT";
 
         @SuppressWarnings("unused")
         @Param({"true", "false"})
@@ -280,42 +297,41 @@ public class BenchmarkPartitionedOutputOperator
             PartitionFunction partitionFunction = new BucketPartitionFunction(
                     HASH.createBucketFunction(ImmutableList.of(BIGINT), true, PARTITION_COUNT),
                     IntStream.range(0, PARTITION_COUNT).toArray());
+            OutputPartitioning outputPartitioning = createOutputPartitioning(partitionFunction);
 
             PagesSerdeFactory serdeFactory = new PagesSerdeFactory(new BlockEncodingManager(new TypeRegistry()), enableCompression);
             PartitionedOutputBuffer buffer = createPartitionedOutputBuffer();
 
-            OptimizedPartitionedOutputFactory operatorFactory = new OptimizedPartitionedOutputFactory(
-                    partitionFunction,
-                    ImmutableList.of(0),
-                    ImmutableList.of(Optional.empty()),
-                    false,
-                    OptionalInt.empty(),
-                    buffer,
-                    MAX_PARTITION_BUFFER_SIZE);
+            OptimizedPartitionedOutputFactory operatorFactory = new OptimizedPartitionedOutputFactory(buffer, MAX_PARTITION_BUFFER_SIZE, 10_000);
 
             return (OptimizedPartitionedOutputOperator) operatorFactory
-                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), serdeFactory)
+                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), Optional.of(outputPartitioning), serdeFactory)
                     .createOperator(createDriverContext());
         }
 
         private PartitionedOutputOperator createPartitionedOutputOperator()
         {
             PartitionFunction partitionFunction = new LocalPartitionGenerator(new PrecomputedHashGenerator(0), PARTITION_COUNT);
+            OutputPartitioning outputPartitioning = createOutputPartitioning(partitionFunction);
+
             PagesSerdeFactory serdeFactory = new PagesSerdeFactory(new BlockEncodingManager(new TypeRegistry()), enableCompression);
             PartitionedOutputBuffer buffer = createPartitionedOutputBuffer();
 
-            PartitionedOutputFactory operatorFactory = new PartitionedOutputFactory(
-                    partitionFunction,
-                    ImmutableList.of(0),
-                    ImmutableList.of(Optional.empty()),
-                    false,
-                    OptionalInt.empty(),
-                    buffer,
-                    MAX_PARTITION_BUFFER_SIZE);
+            PartitionedOutputFactory operatorFactory = new PartitionedOutputFactory(buffer, MAX_PARTITION_BUFFER_SIZE);
 
             return (PartitionedOutputOperator) operatorFactory
-                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), serdeFactory)
+                    .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), Optional.of(outputPartitioning), serdeFactory)
                     .createOperator(createDriverContext());
+        }
+
+        private OutputPartitioning createOutputPartitioning(PartitionFunction partitionFunction)
+        {
+            return new OutputPartitioning(
+                    partitionFunction,
+                    ImmutableList.of(0),
+                    ImmutableList.of(Optional.empty(), Optional.empty()),
+                    false,
+                    OptionalInt.empty());
         }
 
         private DriverContext createDriverContext()
@@ -369,10 +385,6 @@ public class BenchmarkPartitionedOutputOperator
     public static void main(String[] args)
             throws RunnerException
     {
-        BenchmarkData data = new BenchmarkData();
-        data.setup();
-        new BenchmarkPartitionedOutputOperator().optimizedAddPage(data);
-
         Options options = new OptionsBuilder()
                 .verbosity(VerboseMode.NORMAL)
                 .jvmArgs("-Xmx10g")

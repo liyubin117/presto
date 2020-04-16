@@ -15,7 +15,6 @@ package com.facebook.presto.verifier.resolver;
 
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.jdbc.QueryStats;
-import com.facebook.presto.spi.ErrorCodeSupplier;
 import com.facebook.presto.sql.parser.ParsingOptions;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.tree.CreateTable;
@@ -23,7 +22,11 @@ import com.facebook.presto.sql.tree.LongLiteral;
 import com.facebook.presto.sql.tree.Property;
 import com.facebook.presto.sql.tree.ShowCreate;
 import com.facebook.presto.verifier.framework.QueryBundle;
+import com.facebook.presto.verifier.framework.QueryException;
 import com.facebook.presto.verifier.prestoaction.PrestoAction;
+import io.airlift.units.Duration;
+
+import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Optional;
@@ -35,6 +38,7 @@ import static com.facebook.presto.sql.parser.ParsingOptions.DecimalLiteralTreatm
 import static com.facebook.presto.sql.tree.ShowCreate.Type.TABLE;
 import static com.facebook.presto.verifier.framework.QueryStage.DESCRIBE;
 import static com.facebook.presto.verifier.framework.QueryStage.TEST_MAIN;
+import static com.facebook.presto.verifier.resolver.FailureResolverUtil.mapMatchingPrestoException;
 import static com.google.common.base.Suppliers.memoizeWithExpiration;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
@@ -42,8 +46,10 @@ import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public class TooManyOpenPartitionsFailureResolver
-        extends AbstractPrestoQueryFailureResolver
+        implements FailureResolver
 {
+    public static final String NAME = "too-many-open-partitions";
+
     private static final Logger log = Logger.get(TooManyOpenPartitionsFailureResolver.class);
     private static final String NODE_RESOURCE_PATH = "/v1/node";
 
@@ -58,7 +64,6 @@ public class TooManyOpenPartitionsFailureResolver
             Supplier<Integer> testClusterSizeSupplier,
             int maxBucketPerWriter)
     {
-        super(TEST_MAIN);
         this.sqlParser = requireNonNull(sqlParser, "sqlParser is null");
         this.prestoAction = requireNonNull(prestoAction, "prestoAction is null");
         this.testClusterSizeSupplier = requireNonNull(testClusterSizeSupplier, "testClusterSizeSupplier is null");
@@ -66,53 +71,66 @@ public class TooManyOpenPartitionsFailureResolver
     }
 
     @Override
-    public Optional<String> resolveTestQueryFailure(ErrorCodeSupplier errorCode, QueryStats controlQueryStats, QueryStats testQueryStats, Optional<QueryBundle> test)
+    public Optional<String> resolve(QueryStats controlQueryStats, QueryException queryException, Optional<QueryBundle> test)
     {
-        if (errorCode != HIVE_TOO_MANY_OPEN_PARTITIONS || !test.isPresent()) {
+        if (!test.isPresent()) {
             return Optional.empty();
         }
 
-        try {
-            ShowCreate showCreate = new ShowCreate(TABLE, test.get().getTableName());
-            String showCreateResult = getOnlyElement(prestoAction.execute(showCreate, DESCRIBE, resultSet -> resultSet.getString(1)).getResults());
-            CreateTable createTable = (CreateTable) sqlParser.createStatement(showCreateResult, ParsingOptions.builder().setDecimalLiteralTreatment(AS_DOUBLE).build());
-            List<Property> bucketCountProperty = createTable.getProperties().stream()
-                    .filter(property -> property.getName().getValue().equals(BUCKET_COUNT_PROPERTY))
-                    .collect(toImmutableList());
-            if (bucketCountProperty.size() != 1) {
-                return Optional.empty();
-            }
-            long bucketCount = ((LongLiteral) getOnlyElement(bucketCountProperty).getValue()).getValue();
+        return mapMatchingPrestoException(queryException, TEST_MAIN, HIVE_TOO_MANY_OPEN_PARTITIONS,
+                e -> {
+                    try {
+                        ShowCreate showCreate = new ShowCreate(TABLE, test.get().getTableName());
+                        String showCreateResult = getOnlyElement(prestoAction.execute(showCreate, DESCRIBE, resultSet -> Optional.of(resultSet.getString(1))).getResults());
+                        CreateTable createTable = (CreateTable) sqlParser.createStatement(showCreateResult, ParsingOptions.builder().setDecimalLiteralTreatment(AS_DOUBLE).build());
+                        List<Property> bucketCountProperty = createTable.getProperties().stream()
+                                .filter(property -> property.getName().getValue().equals(BUCKET_COUNT_PROPERTY))
+                                .collect(toImmutableList());
+                        if (bucketCountProperty.size() != 1) {
+                            return Optional.empty();
+                        }
+                        long bucketCount = ((LongLiteral) getOnlyElement(bucketCountProperty).getValue()).getValue();
 
-            int testClusterSize = testClusterSizeSupplier.get();
+                        int testClusterSize = testClusterSizeSupplier.get();
 
-            if (testClusterSize * maxBucketPerWriter < bucketCount) {
-                return Optional.of("Auto Resolved: No enough worker on test cluster");
-            }
-            return Optional.empty();
-        }
-        catch (Throwable t) {
-            log.warn(t, "Exception when resolving HIVE_TOO_MANY_OPEN_PARTITIONS");
-            return Optional.empty();
-        }
+                        if (testClusterSize * maxBucketPerWriter < bucketCount) {
+                            return Optional.of("Not enough workers on test cluster");
+                        }
+                        return Optional.empty();
+                    }
+                    catch (Throwable t) {
+                        log.warn(t, "Exception when resolving HIVE_TOO_MANY_OPEN_PARTITIONS");
+                        return Optional.empty();
+                    }
+                });
     }
 
     public static class Factory
             implements FailureResolverFactory
     {
+        private final Duration clusterSizeExpiration;
+        private final int maxBucketPerWriter;
+
+        @Inject
+        public Factory(TooManyOpenPartitionsFailureResolverConfig config)
+        {
+            this.clusterSizeExpiration = requireNonNull(config.getClusterSizeExpiration(), "clusterSizeExpiration is null");
+            this.maxBucketPerWriter = config.getMaxBucketsPerWriter();
+        }
+
         @Override
         public FailureResolver create(FailureResolverFactoryContext context)
         {
             Supplier<Integer> testClusterSizeSupplier = memoizeWithExpiration(
                     () -> context.getTestResourceClient().getClusterSize(NODE_RESOURCE_PATH),
-                    context.getClusterSizeExpiration().toMillis(),
+                    clusterSizeExpiration.toMillis(),
                     MILLISECONDS);
 
             return new TooManyOpenPartitionsFailureResolver(
                     context.getSqlParser(),
                     context.getPrestoAction(),
                     testClusterSizeSupplier,
-                    context.getMaxBucketPerWriter());
+                    maxBucketPerWriter);
         }
     }
 }

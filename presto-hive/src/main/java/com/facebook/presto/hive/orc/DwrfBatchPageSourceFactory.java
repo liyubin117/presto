@@ -15,11 +15,11 @@ package com.facebook.presto.hive.orc;
 
 import com.facebook.hive.orc.OrcSerde;
 import com.facebook.presto.hive.FileFormatDataSourceStats;
-import com.facebook.presto.hive.FileOpener;
 import com.facebook.presto.hive.HdfsEnvironment;
 import com.facebook.presto.hive.HiveBatchPageSourceFactory;
 import com.facebook.presto.hive.HiveClientConfig;
 import com.facebook.presto.hive.HiveColumnHandle;
+import com.facebook.presto.hive.HiveFileContext;
 import com.facebook.presto.hive.metastore.Storage;
 import com.facebook.presto.orc.OrcReaderOptions;
 import com.facebook.presto.orc.StripeMetadataSource;
@@ -60,7 +60,6 @@ public class DwrfBatchPageSourceFactory
     private final int domainCompactionThreshold;
     private final OrcFileTailSource orcFileTailSource;
     private final StripeMetadataSource stripeMetadataSource;
-    private final FileOpener fileOpener;
 
     @Inject
     public DwrfBatchPageSourceFactory(
@@ -69,8 +68,7 @@ public class DwrfBatchPageSourceFactory
             HdfsEnvironment hdfsEnvironment,
             FileFormatDataSourceStats stats,
             OrcFileTailSource orcFileTailSource,
-            StripeMetadataSource stripeMetadataSource,
-            FileOpener fileOpener)
+            StripeMetadataSource stripeMetadataSource)
     {
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
@@ -78,11 +76,11 @@ public class DwrfBatchPageSourceFactory
         this.domainCompactionThreshold = requireNonNull(config, "config is null").getDomainCompactionThreshold();
         this.orcFileTailSource = requireNonNull(orcFileTailSource, "orcFileTailSource is null");
         this.stripeMetadataSource = requireNonNull(stripeMetadataSource, "stripeMetadataSource is null");
-        this.fileOpener = requireNonNull(fileOpener, "fileOpener is null");
     }
 
     @Override
-    public Optional<? extends ConnectorPageSource> createPageSource(Configuration configuration,
+    public Optional<? extends ConnectorPageSource> createPageSource(
+            Configuration configuration,
             ConnectorSession session,
             Path path,
             long start,
@@ -93,7 +91,7 @@ public class DwrfBatchPageSourceFactory
             List<HiveColumnHandle> columns,
             TupleDomain<HiveColumnHandle> effectivePredicate,
             DateTimeZone hiveStorageTimeZone,
-            Optional<byte[]> extraFileInfo)
+            HiveFileContext hiveFileContext)
     {
         if (!OrcSerde.class.getName().equals(storage.getStorageFormat().getSerDe())) {
             return Optional.empty();
@@ -125,8 +123,7 @@ public class DwrfBatchPageSourceFactory
                 domainCompactionThreshold,
                 orcFileTailSource,
                 stripeMetadataSource,
-                extraFileInfo,
-                fileOpener,
+                hiveFileContext,
                 new OrcReaderOptions(
                         getOrcMaxMergeDistance(session),
                         getOrcTinyStripeThreshold(session),

@@ -26,8 +26,6 @@ import com.facebook.presto.sql.tree.TryExpression;
 import com.facebook.presto.verifier.framework.Column;
 import com.google.common.collect.ImmutableList;
 
-import javax.inject.Inject;
-
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -39,39 +37,14 @@ import static java.lang.String.format;
 public class ArrayColumnValidator
         implements ColumnValidator
 {
-    @Inject
-    public ArrayColumnValidator()
-    {
-    }
-
     @Override
     public List<SingleColumn> generateChecksumColumns(Column column)
     {
-        checkArgument(column.getType() instanceof ArrayType, "Expect ArrayType, found %s", column.getType().getDisplayName());
-        Type elementType = ((ArrayType) column.getType()).getElementType();
-
-        Expression checksum;
-
-        if (elementType.isOrderable()) {
-            FunctionCall arraySort = new FunctionCall(QualifiedName.of("array_sort"), ImmutableList.of(column.getIdentifier()));
-
-            if (elementType instanceof ArrayType || elementType instanceof RowType) {
-                checksum = new CoalesceExpression(
-                        new FunctionCall(QualifiedName.of("checksum"), ImmutableList.of(new TryExpression(arraySort))),
-                        new FunctionCall(QualifiedName.of("checksum"), ImmutableList.of(column.getIdentifier())));
-            }
-            else {
-                checksum = new FunctionCall(QualifiedName.of("checksum"), ImmutableList.of(arraySort));
-            }
-        }
-        else {
-            checksum = new FunctionCall(QualifiedName.of("checksum"), ImmutableList.of(column.getIdentifier()));
-        }
-
+        Expression checksum = generateArrayChecksum(column.getExpression(), column.getType());
         Expression arrayCardinalitySum = new CoalesceExpression(
                 new FunctionCall(
                         QualifiedName.of("sum"),
-                        ImmutableList.of(new FunctionCall(QualifiedName.of("cardinality"), ImmutableList.of(column.getIdentifier())))),
+                        ImmutableList.of(new FunctionCall(QualifiedName.of("cardinality"), ImmutableList.of(column.getExpression())))),
                 new LongLiteral("0"));
 
         return ImmutableList.of(
@@ -80,7 +53,7 @@ public class ArrayColumnValidator
     }
 
     @Override
-    public ColumnMatchResult validate(Column column, ChecksumResult controlResult, ChecksumResult testResult)
+    public List<ColumnMatchResult> validate(Column column, ChecksumResult controlResult, ChecksumResult testResult)
     {
         String checksumColumnAlias = getChecksumColumnAlias(column);
         Object controlChecksum = controlResult.getChecksum(checksumColumnAlias);
@@ -90,23 +63,42 @@ public class ArrayColumnValidator
         Object controlCardinalitySum = controlResult.getChecksum(cardinalitySumColumnAlias);
         Object testCardinalitySum = testResult.getChecksum(cardinalitySumColumnAlias);
 
-        return new ColumnMatchResult(
+        return ImmutableList.of(new ColumnMatchResult(
                 Objects.equals(controlChecksum, testChecksum) && Objects.equals(controlCardinalitySum, testCardinalitySum),
+                column,
                 format(
                         "control(checksum: %s, cardinality_sum: %s) test(checksum: %s, cardinality_sum: %s)",
                         controlChecksum,
                         controlCardinalitySum,
                         testChecksum,
-                        testCardinalitySum));
+                        testCardinalitySum)));
+    }
+
+    public static Expression generateArrayChecksum(Expression column, Type type)
+    {
+        checkArgument(type instanceof ArrayType, "Expect ArrayType, found %s", type.getDisplayName());
+        Type elementType = ((ArrayType) type).getElementType();
+
+        if (elementType.isOrderable()) {
+            FunctionCall arraySort = new FunctionCall(QualifiedName.of("array_sort"), ImmutableList.of(column));
+
+            if (elementType instanceof ArrayType || elementType instanceof RowType) {
+                return new CoalesceExpression(
+                        new FunctionCall(QualifiedName.of("checksum"), ImmutableList.of(new TryExpression(arraySort))),
+                        new FunctionCall(QualifiedName.of("checksum"), ImmutableList.of(column)));
+            }
+            return new FunctionCall(QualifiedName.of("checksum"), ImmutableList.of(arraySort));
+        }
+        return new FunctionCall(QualifiedName.of("checksum"), ImmutableList.of(column));
     }
 
     private static String getChecksumColumnAlias(Column column)
     {
-        return column.getName() + "_checksum";
+        return column.getName() + "$checksum";
     }
 
     private static String getCardinalitySumColumnAlias(Column column)
     {
-        return column.getName() + "_cardinality_sum";
+        return column.getName() + "$cardinality_sum";
     }
 }

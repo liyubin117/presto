@@ -23,6 +23,7 @@ import com.facebook.presto.execution.scheduler.LegacyNetworkTopology;
 import com.facebook.presto.execution.scheduler.NodeScheduler;
 import com.facebook.presto.execution.scheduler.NodeSchedulerConfig;
 import com.facebook.presto.execution.scheduler.TableWriteInfo;
+import com.facebook.presto.execution.scheduler.nodeSelection.NodeSelectionStats;
 import com.facebook.presto.index.IndexManager;
 import com.facebook.presto.metadata.InMemoryNodeManager;
 import com.facebook.presto.metadata.MetadataManager;
@@ -92,24 +93,29 @@ public final class TaskTestUtils
 
     public static final VariableReferenceExpression VARIABLE = new VariableReferenceExpression("column", BIGINT);
 
-    public static final PlanFragment PLAN_FRAGMENT = new PlanFragment(
-            new PlanFragmentId(0),
-            new TableScanNode(
-                    TABLE_SCAN_NODE_ID,
-                    new TableHandle(CONNECTOR_ID, new TestingTableHandle(), TRANSACTION_HANDLE, Optional.empty()),
-                    ImmutableList.of(VARIABLE),
-                    ImmutableMap.of(VARIABLE, new TestingColumnHandle("column", 0, BIGINT)),
-                    TupleDomain.all(),
-                    TupleDomain.all()),
-            ImmutableSet.of(VARIABLE),
-            SOURCE_DISTRIBUTION,
-            ImmutableList.of(TABLE_SCAN_NODE_ID),
-            new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of(VARIABLE))
-                    .withBucketToPartition(Optional.of(new int[1])),
-            StageExecutionDescriptor.ungroupedExecution(),
-            false,
-            StatsAndCosts.empty(),
-            Optional.empty());
+    public static final PlanFragment PLAN_FRAGMENT = createPlanFragment();
+
+    public static PlanFragment createPlanFragment()
+    {
+        return new PlanFragment(
+                new PlanFragmentId(0),
+                new TableScanNode(
+                        TABLE_SCAN_NODE_ID,
+                        new TableHandle(CONNECTOR_ID, new TestingTableHandle(), TRANSACTION_HANDLE, Optional.empty()),
+                        ImmutableList.of(VARIABLE),
+                        ImmutableMap.of(VARIABLE, new TestingColumnHandle("column", 0, BIGINT)),
+                        TupleDomain.all(),
+                        TupleDomain.all()),
+                ImmutableSet.of(VARIABLE),
+                SOURCE_DISTRIBUTION,
+                ImmutableList.of(TABLE_SCAN_NODE_ID),
+                new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of(VARIABLE))
+                        .withBucketToPartition(Optional.of(new int[1])),
+                StageExecutionDescriptor.ungroupedExecution(),
+                false,
+                StatsAndCosts.empty(),
+                Optional.empty());
+    }
 
     public static LocalExecutionPlanner createTestingPlanner()
     {
@@ -124,6 +130,7 @@ public final class TaskTestUtils
         NodeScheduler nodeScheduler = new NodeScheduler(
                 new LegacyNetworkTopology(),
                 new InMemoryNodeManager(),
+                new NodeSelectionStats(),
                 new NodeSchedulerConfig().setIncludeCoordinator(true),
                 new NodeTaskMap(finalizerService));
         PartitioningProviderManager partitioningProviderManager = new PartitioningProviderManager();

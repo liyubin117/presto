@@ -74,8 +74,10 @@ public class PinotConfig
     private Duration metadataCacheExpiry = new Duration(2, TimeUnit.MINUTES);
 
     private boolean allowMultipleAggregations;
-    private boolean preferBrokerQueries = true;
+    private boolean forbidBrokerQueries;
     private boolean forbidSegmentQueries;
+    private boolean inferDateTypeInSchema;
+    private boolean inferTimestampTypeInSchema;
     private int numSegmentsPerSplit = 1;
     private boolean ignoreEmptyResponses;
     private int fetchRetryCount = 2;
@@ -319,15 +321,15 @@ public class PinotConfig
         return this;
     }
 
-    public boolean isPreferBrokerQueries()
+    public boolean isForbidBrokerQueries()
     {
-        return preferBrokerQueries;
+        return forbidBrokerQueries;
     }
 
-    @Config("pinot.prefer-broker-queries")
-    public PinotConfig setPreferBrokerQueries(boolean preferBrokerQueries)
+    @Config("pinot.forbid-broker-queries")
+    public PinotConfig setForbidBrokerQueries(boolean forbidBrokerQueries)
     {
-        this.preferBrokerQueries = preferBrokerQueries;
+        this.forbidBrokerQueries = forbidBrokerQueries;
         return this;
     }
 
@@ -414,6 +416,30 @@ public class PinotConfig
     public PinotConfig setNonAggregateLimitForBrokerQueries(int nonAggregateLimitForBrokerQueries)
     {
         this.nonAggregateLimitForBrokerQueries = nonAggregateLimitForBrokerQueries;
+        return this;
+    }
+
+    public boolean isInferDateTypeInSchema()
+    {
+        return inferDateTypeInSchema;
+    }
+
+    @Config("pinot.infer-date-type-in-schema")
+    public PinotConfig setInferDateTypeInSchema(boolean inferDateTypeInSchema)
+    {
+        this.inferDateTypeInSchema = inferDateTypeInSchema;
+        return this;
+    }
+
+    public boolean isInferTimestampTypeInSchema()
+    {
+        return inferTimestampTypeInSchema;
+    }
+
+    @Config("pinot.infer-timestamp-type-in-schema")
+    public PinotConfig setInferTimestampTypeInSchema(boolean inferTimestampTypeInSchema)
+    {
+        this.inferTimestampTypeInSchema = inferTimestampTypeInSchema;
         return this;
     }
 }

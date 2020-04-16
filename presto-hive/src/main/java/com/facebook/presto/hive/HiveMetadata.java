@@ -14,8 +14,6 @@
 package com.facebook.presto.hive;
 
 import com.facebook.airlift.json.JsonCodec;
-import com.facebook.presto.expressions.DefaultRowExpressionTraversalVisitor;
-import com.facebook.presto.expressions.LogicalRowExpressions;
 import com.facebook.presto.hive.HdfsEnvironment.HdfsContext;
 import com.facebook.presto.hive.LocationService.WriteInfo;
 import com.facebook.presto.hive.PartitionUpdate.FileWriteInfo;
@@ -41,7 +39,6 @@ import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorNewTableLayout;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
-import com.facebook.presto.spi.ConnectorPushdownFilterResult;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.ConnectorTableLayout;
@@ -73,12 +70,9 @@ import com.facebook.presto.spi.plan.FilterStatsCalculatorService;
 import com.facebook.presto.spi.predicate.Domain;
 import com.facebook.presto.spi.predicate.NullableValue;
 import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.relation.ConstantExpression;
-import com.facebook.presto.spi.relation.DomainTranslator.ExtractionResult;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.RowExpressionService;
 import com.facebook.presto.spi.relation.SpecialFormExpression;
-import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.spi.security.GrantInfo;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.Privilege;
@@ -108,6 +102,7 @@ import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import io.airlift.slice.Slice;
@@ -125,7 +120,6 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -143,9 +137,7 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static com.facebook.airlift.concurrent.MoreFutures.toCompletableFuture;
-import static com.facebook.presto.expressions.LogicalRowExpressions.FALSE_CONSTANT;
 import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
-import static com.facebook.presto.expressions.LogicalRowExpressions.and;
 import static com.facebook.presto.expressions.LogicalRowExpressions.binaryExpression;
 import static com.facebook.presto.hive.HiveAnalyzeProperties.getPartitionList;
 import static com.facebook.presto.hive.HiveBasicStatistics.createEmptyStatistics;
@@ -161,8 +153,11 @@ import static com.facebook.presto.hive.HiveColumnHandle.PATH_COLUMN_NAME;
 import static com.facebook.presto.hive.HiveColumnHandle.updateRowIdHandle;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_COLUMN_ORDER_MISMATCH;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_CONCURRENT_MODIFICATION_DETECTED;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_METADATA;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_PARTITION_READ_ONLY;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_TIMEZONE_MISMATCH;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNKNOWN_ERROR;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static com.facebook.presto.hive.HivePartition.UNPARTITIONED_ID;
 import static com.facebook.presto.hive.HiveSessionProperties.getCompressionCodec;
 import static com.facebook.presto.hive.HiveSessionProperties.getHiveStorageFormat;
@@ -175,6 +170,7 @@ import static com.facebook.presto.hive.HiveSessionProperties.isCollectColumnStat
 import static com.facebook.presto.hive.HiveSessionProperties.isOfflineDataDebugModeEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isOptimizedMismatchedBucketCount;
 import static com.facebook.presto.hive.HiveSessionProperties.isRespectTableFormat;
+import static com.facebook.presto.hive.HiveSessionProperties.isShufflePartitionedColumnsForTableWriteEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isSortedWriteToTempPathEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isSortedWritingEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isStatisticsEnabled;
@@ -194,7 +190,6 @@ import static com.facebook.presto.hive.HiveTableProperties.getHiveStorageFormat;
 import static com.facebook.presto.hive.HiveTableProperties.getOrcBloomFilterColumns;
 import static com.facebook.presto.hive.HiveTableProperties.getOrcBloomFilterFpp;
 import static com.facebook.presto.hive.HiveTableProperties.getPartitionedBy;
-import static com.facebook.presto.hive.HiveType.HIVE_STRING;
 import static com.facebook.presto.hive.HiveType.toHiveType;
 import static com.facebook.presto.hive.HiveUtil.columnExtraInfo;
 import static com.facebook.presto.hive.HiveUtil.decodeViewData;
@@ -208,8 +203,6 @@ import static com.facebook.presto.hive.HiveUtil.verifyPartitionTypeSupported;
 import static com.facebook.presto.hive.HiveWriteUtils.checkTableIsWritable;
 import static com.facebook.presto.hive.HiveWriteUtils.isWritableType;
 import static com.facebook.presto.hive.HiveWriterFactory.getFileExtension;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_INVALID_METADATA;
-import static com.facebook.presto.hive.MetastoreErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static com.facebook.presto.hive.PartitionUpdate.UpdateMode.APPEND;
 import static com.facebook.presto.hive.PartitionUpdate.UpdateMode.NEW;
 import static com.facebook.presto.hive.PartitionUpdate.UpdateMode.OVERWRITE;
@@ -235,17 +228,12 @@ import static com.facebook.presto.hive.metastore.StorageFormat.fromHiveStorageFo
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.listEnabledPrincipals;
 import static com.facebook.presto.hive.security.SqlStandardAccessControl.ADMIN_ROLE_NAME;
 import static com.facebook.presto.spi.StandardErrorCode.ALREADY_EXISTS;
-import static com.facebook.presto.spi.StandardErrorCode.DIVISION_BY_ZERO;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_ANALYZE_PROPERTY;
-import static com.facebook.presto.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
-import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_SCHEMA_PROPERTY;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_TABLE_PROPERTY;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE;
 import static com.facebook.presto.spi.StandardErrorCode.SCHEMA_NOT_EMPTY;
 import static com.facebook.presto.spi.predicate.TupleDomain.withColumnDomains;
-import static com.facebook.presto.spi.relation.ExpressionOptimizer.Level.OPTIMIZED;
 import static com.facebook.presto.spi.security.PrincipalType.USER;
 import static com.facebook.presto.spi.statistics.TableStatisticType.ROW_COUNT;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
@@ -258,7 +246,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.concat;
-import static com.google.common.collect.Sets.intersection;
 import static com.google.common.collect.Streams.stream;
 import static java.lang.String.format;
 import static java.util.Collections.emptyList;
@@ -289,6 +276,12 @@ public class HiveMetadata
             Optional.empty(),
             Optional.empty(),
             emptyList());
+
+    // 1009 is chosen as a prime number greater than 1000.
+    // This is because Hive bucket function can result in skewed distribution when bucket number of power of 2
+    // TODO: Use a regular number once better hash function is used for table write shuffle partitioning.
+    private static final int SHUFFLE_MAX_PARALLELISM_FOR_PARTITIONED_TABLE_WRITE = 1009;
+
     private final boolean allowCorruptWritesForTesting;
     private final SemiTransactionalHiveMetastore metastore;
     private final HdfsEnvironment hdfsEnvironment;
@@ -304,6 +297,7 @@ public class HiveMetadata
     private final JsonCodec<PartitionUpdate> partitionUpdateCodec;
     private final boolean writesToNonManagedTablesEnabled;
     private final boolean createsOfNonManagedTablesEnabled;
+    private final int maxPartitionBatchSize;
     private final TypeTranslator typeTranslator;
     private final String prestoVersion;
     private final HiveStatisticsProvider hiveStatisticsProvider;
@@ -319,6 +313,7 @@ public class HiveMetadata
             boolean allowCorruptWritesForTesting,
             boolean writesToNonManagedTablesEnabled,
             boolean createsOfNonManagedTablesEnabled,
+            int maxPartitionBatchSize,
             TypeManager typeManager,
             LocationService locationService,
             StandardFunctionResolution functionResolution,
@@ -350,6 +345,7 @@ public class HiveMetadata
         this.partitionUpdateCodec = requireNonNull(partitionUpdateCodec, "partitionUpdateCodec is null");
         this.writesToNonManagedTablesEnabled = writesToNonManagedTablesEnabled;
         this.createsOfNonManagedTablesEnabled = createsOfNonManagedTablesEnabled;
+        this.maxPartitionBatchSize = maxPartitionBatchSize;
         this.typeTranslator = requireNonNull(typeTranslator, "typeTranslator is null");
         this.prestoVersion = requireNonNull(prestoVersion, "prestoVersion is null");
         this.hiveStatisticsProvider = requireNonNull(hiveStatisticsProvider, "hiveStatisticsProvider is null");
@@ -1557,6 +1553,8 @@ public class HiveMetadata
                 .collect(toImmutableMap(HiveColumnHandle::getName, column -> column.getHiveType().getType(typeManager)));
         Map<List<String>, ComputedStatistics> partitionComputedStatistics = createComputedStatisticsToPartitionMap(computedStatistics, partitionedBy, columnTypes);
 
+        Set<String> existingPartitions = getExistingPartitionNames(handle.getSchemaName(), handle.getTableName(), partitionUpdates);
+
         for (PartitionUpdate partitionUpdate : partitionUpdates) {
             if (partitionUpdate.getName().isEmpty()) {
                 // insert into unpartitioned table
@@ -1596,8 +1594,13 @@ public class HiveMetadata
                 if (!partition.getStorage().getStorageFormat().getInputFormat().equals(handle.getPartitionStorageFormat().getInputFormat()) && isRespectTableFormat(session)) {
                     throw new PrestoException(HIVE_CONCURRENT_MODIFICATION_DETECTED, "Partition format changed during insert");
                 }
-                if (partitionUpdate.getUpdateMode() == OVERWRITE) {
-                    metastore.dropPartition(session, handle.getSchemaName(), handle.getTableName(), partition.getValues());
+                if (existingPartitions.contains(partitionUpdate.getName())) {
+                    if (partitionUpdate.getUpdateMode() == OVERWRITE) {
+                        metastore.dropPartition(session, handle.getSchemaName(), handle.getTableName(), partition.getValues());
+                    }
+                    else {
+                        throw new PrestoException(HIVE_PARTITION_READ_ONLY, "Cannot insert into an existing partition of Hive table: " + partitionUpdate.getName());
+                    }
                 }
                 PartitionStatistics partitionStatistics = createPartitionStatistics(
                         session,
@@ -1668,8 +1671,37 @@ public class HiveMetadata
                 .orElse(ImmutableMap.of());
     }
 
+    private Set<String> getExistingPartitionNames(String databaseName, String tableName, List<PartitionUpdate> partitionUpdates)
+    {
+        ImmutableSet.Builder<String> existingPartitions = ImmutableSet.builder();
+        ImmutableSet.Builder<String> potentiallyNewPartitions = ImmutableSet.builder();
+
+        for (PartitionUpdate update : partitionUpdates) {
+            switch (update.getUpdateMode()) {
+                case APPEND:
+                    existingPartitions.add(update.getName());
+                    break;
+                case NEW:
+                case OVERWRITE:
+                    potentiallyNewPartitions.add(update.getName());
+                    break;
+                default:
+                    throw new IllegalArgumentException("unexpected update mode: " + update.getUpdateMode());
+            }
+        }
+
+        // try to load potentially new partitions in batches to check if any of them exist
+        Lists.partition(ImmutableList.copyOf(potentiallyNewPartitions.build()), maxPartitionBatchSize).stream()
+                .flatMap(partitionNames -> metastore.getPartitionsByNames(databaseName, tableName, partitionNames).entrySet().stream()
+                        .filter(entry -> entry.getValue().isPresent())
+                        .map(Map.Entry::getKey))
+                .forEach(existingPartitions::add);
+
+        return existingPartitions.build();
+    }
+
     @Override
-    public void createView(ConnectorSession session, SchemaTableName viewName, String viewData, boolean replace)
+    public void createView(ConnectorSession session, ConnectorTableMetadata viewMetadata, String viewData, boolean replace)
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put(TABLE_COMMENT, "Presto View")
@@ -1678,14 +1710,18 @@ public class HiveMetadata
                 .put(PRESTO_QUERY_ID_NAME, session.getQueryId())
                 .build();
 
-        Column dummyColumn = new Column("dummy", HIVE_STRING, Optional.empty());
+        List<Column> columns = viewMetadata.getColumns().stream()
+                .map(col -> new Column(col.getName(), toHiveType(typeTranslator, col.getType()), Optional.ofNullable(col.getComment())))
+                .collect(toImmutableList());
+
+        SchemaTableName viewName = viewMetadata.getTable();
 
         Table.Builder tableBuilder = Table.builder()
                 .setDatabaseName(viewName.getSchemaName())
                 .setTableName(viewName.getTableName())
                 .setOwner(session.getUser())
                 .setTableType(VIRTUAL_VIEW)
-                .setDataColumns(ImmutableList.of(dummyColumn))
+                .setDataColumns(columns)
                 .setPartitionColumns(ImmutableList.of())
                 .setParameters(properties)
                 .setViewOriginalText(Optional.of(encodeViewData(viewData)))
@@ -1862,194 +1898,13 @@ public class HiveMetadata
     }
 
     @Override
-    public boolean isPushdownFilterSupported(ConnectorSession session, ConnectorTableHandle tableHandle)
+    public boolean isLegacyGetLayoutSupported(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         if (((HiveTableHandle) tableHandle).getAnalyzePartitionValues().isPresent()) {
-            return false;
+            return true;
         }
 
-        return isPushdownFilterEnabled(session, tableHandle);
-    }
-
-    @Override
-    public ConnectorPushdownFilterResult pushdownFilter(ConnectorSession session, ConnectorTableHandle tableHandle, RowExpression filter, Optional<ConnectorTableLayoutHandle> currentLayoutHandle)
-    {
-        if (TRUE_CONSTANT.equals(filter) && currentLayoutHandle.isPresent()) {
-            return new ConnectorPushdownFilterResult(getTableLayout(session, currentLayoutHandle.get()), TRUE_CONSTANT);
-        }
-
-        // Split the filter into 3 groups of conjuncts:
-        //  - range filters that apply to entire columns,
-        //  - range filters that apply to subfields,
-        //  - the rest. Intersect these with possibly pre-existing filters.
-        ExtractionResult<Subfield> decomposedFilter = rowExpressionService.getDomainTranslator()
-                .fromPredicate(session, filter, new SubfieldExtractor(functionResolution, rowExpressionService.getExpressionOptimizer(), session).toColumnExtractor());
-        if (currentLayoutHandle.isPresent()) {
-            HiveTableLayoutHandle currentHiveLayout = (HiveTableLayoutHandle) currentLayoutHandle.get();
-            decomposedFilter = intersectExtractionResult(decomposedFilter, new ExtractionResult(currentHiveLayout.getDomainPredicate(), currentHiveLayout.getRemainingPredicate()));
-        }
-
-        if (decomposedFilter.getTupleDomain().isNone()) {
-            return new ConnectorPushdownFilterResult(EMPTY_TABLE_LAYOUT, FALSE_CONSTANT);
-        }
-
-        RowExpression optimizedRemainingExpression = rowExpressionService.getExpressionOptimizer().optimize(decomposedFilter.getRemainingExpression(), OPTIMIZED, session);
-        if (optimizedRemainingExpression instanceof ConstantExpression) {
-            ConstantExpression constantExpression = (ConstantExpression) optimizedRemainingExpression;
-            if (FALSE_CONSTANT.equals(constantExpression) || constantExpression.getValue() == null) {
-                return new ConnectorPushdownFilterResult(EMPTY_TABLE_LAYOUT, FALSE_CONSTANT);
-            }
-        }
-        Map<String, ColumnHandle> columnHandles = getColumnHandles(session, tableHandle);
-        TupleDomain<ColumnHandle> entireColumnDomain = decomposedFilter.getTupleDomain()
-                .transform(subfield -> isEntireColumn(subfield) ? subfield.getRootName() : null)
-                .transform(columnHandles::get);
-        if (currentLayoutHandle.isPresent()) {
-            entireColumnDomain = entireColumnDomain.intersect(((HiveTableLayoutHandle) (currentLayoutHandle.get())).getPartitionColumnPredicate());
-        }
-
-        Constraint<ColumnHandle> constraint = new Constraint<>(entireColumnDomain);
-
-        // Extract deterministic conjuncts that apply to partition columns and specify these as Constraint#predicate
-        if (!TRUE_CONSTANT.equals(decomposedFilter.getRemainingExpression())) {
-            LogicalRowExpressions logicalRowExpressions = new LogicalRowExpressions(rowExpressionService.getDeterminismEvaluator(), functionResolution, functionMetadataManager);
-            RowExpression deterministicPredicate = logicalRowExpressions.filterDeterministicConjuncts(decomposedFilter.getRemainingExpression());
-            if (!TRUE_CONSTANT.equals(deterministicPredicate)) {
-                ConstraintEvaluator evaluator = new ConstraintEvaluator(rowExpressionService, session, columnHandles, deterministicPredicate);
-                constraint = new Constraint<>(entireColumnDomain, evaluator::isCandidate);
-            }
-        }
-
-        HivePartitionResult hivePartitionResult = partitionManager.getPartitions(metastore, tableHandle, constraint, session);
-
-        TupleDomain<Subfield> domainPredicate = withColumnDomains(ImmutableMap.<Subfield, Domain>builder()
-                .putAll(hivePartitionResult.getUnenforcedConstraint()
-                        .transform(HiveMetadata::toSubfield)
-                        .getDomains()
-                        .orElse(ImmutableMap.of()))
-                .putAll(decomposedFilter.getTupleDomain()
-                        .transform(subfield -> !isEntireColumn(subfield) ? subfield : null)
-                        .getDomains()
-                        .orElse(ImmutableMap.of()))
-                .build());
-
-        Set<String> predicateColumnNames = new HashSet<>();
-        domainPredicate.getDomains().get().keySet().stream()
-                .map(Subfield::getRootName)
-                .forEach(predicateColumnNames::add);
-        // Include only columns referenced in the optimized expression. Although the expression is sent to the worker node
-        // unoptimized, the worker is expected to optimize the expression before executing.
-        extractAll(optimizedRemainingExpression).stream()
-                .map(VariableReferenceExpression::getName)
-                .forEach(predicateColumnNames::add);
-
-        Map<String, HiveColumnHandle> predicateColumns = predicateColumnNames.stream()
-                .map(columnHandles::get)
-                .map(HiveColumnHandle.class::cast)
-                .collect(toImmutableMap(HiveColumnHandle::getName, Functions.identity()));
-
-        SchemaTableName tableName = ((HiveTableHandle) tableHandle).getSchemaTableName();
-        return new ConnectorPushdownFilterResult(
-                getTableLayout(
-                        session,
-                        new HiveTableLayoutHandle(
-                                tableName,
-                                hivePartitionResult.getPartitionColumns(),
-                                // remove comments to optimize serialization costs
-                                pruneColumnComments(hivePartitionResult.getDataColumns()),
-                                hivePartitionResult.getTableParameters(),
-                                hivePartitionResult.getPartitions(),
-                                domainPredicate,
-                                decomposedFilter.getRemainingExpression(),
-                                predicateColumns,
-                                hivePartitionResult.getEnforcedConstraint(),
-                                hivePartitionResult.getBucketHandle(),
-                                hivePartitionResult.getBucketFilter(),
-                                true,
-                                createTableLayoutString(session, tableName, hivePartitionResult.getBucketHandle(), hivePartitionResult.getBucketFilter(), decomposedFilter.getRemainingExpression(), domainPredicate))),
-                TRUE_CONSTANT);
-    }
-
-    private static class ConstraintEvaluator
-    {
-        private final Map<String, ColumnHandle> assignments;
-        private final RowExpressionService evaluator;
-        private final ConnectorSession session;
-        private final RowExpression expression;
-        private final Set<ColumnHandle> arguments;
-
-        public ConstraintEvaluator(RowExpressionService evaluator, ConnectorSession session, Map<String, ColumnHandle> assignments, RowExpression expression)
-        {
-            this.assignments = assignments;
-            this.evaluator = evaluator;
-            this.session = session;
-            this.expression = expression;
-
-            arguments = ImmutableSet.copyOf(extractAll(expression)).stream()
-                    .map(VariableReferenceExpression::getName)
-                    .map(assignments::get)
-                    .collect(toImmutableSet());
-        }
-
-        private boolean isCandidate(Map<ColumnHandle, NullableValue> bindings)
-        {
-            if (intersection(bindings.keySet(), arguments).isEmpty()) {
-                return true;
-            }
-
-            Function<VariableReferenceExpression, Object> variableResolver = variable -> {
-                ColumnHandle column = assignments.get(variable.getName());
-                checkArgument(column != null, "Missing column assignment for %s", variable);
-
-                if (!bindings.containsKey(column)) {
-                    return variable;
-                }
-
-                return bindings.get(column).getValue();
-            };
-
-            // Skip pruning if evaluation fails in a recoverable way. Failing here can cause
-            // spurious query failures for partitions that would otherwise be filtered out.
-            Object optimized = null;
-            try {
-                optimized = evaluator.getExpressionOptimizer().optimize(expression, OPTIMIZED, session, variableResolver);
-            }
-            catch (PrestoException e) {
-                propagateIfUnhandled(e);
-            }
-
-            // If any conjuncts evaluate to FALSE or null, then the whole predicate will never be true and so the partition should be pruned
-            return !Boolean.FALSE.equals(optimized) && optimized != null && (!(optimized instanceof ConstantExpression) || !((ConstantExpression) optimized).isNull());
-        }
-
-        private static void propagateIfUnhandled(PrestoException e)
-                throws PrestoException
-        {
-            int errorCode = e.getErrorCode().getCode();
-            if (errorCode == DIVISION_BY_ZERO.toErrorCode().getCode()
-                    || errorCode == INVALID_CAST_ARGUMENT.toErrorCode().getCode()
-                    || errorCode == INVALID_FUNCTION_ARGUMENT.toErrorCode().getCode()
-                    || errorCode == NUMERIC_VALUE_OUT_OF_RANGE.toErrorCode().getCode()) {
-                return;
-            }
-
-            throw e;
-        }
-    }
-
-    private static ExtractionResult intersectExtractionResult(ExtractionResult left, ExtractionResult right)
-    {
-        RowExpression newRemainingExpression;
-        if (right.getRemainingExpression().equals(TRUE_CONSTANT)) {
-            newRemainingExpression = left.getRemainingExpression();
-        }
-        else if (left.getRemainingExpression().equals(TRUE_CONSTANT)) {
-            newRemainingExpression = right.getRemainingExpression();
-        }
-        else {
-            newRemainingExpression = and(left.getRemainingExpression(), right.getRemainingExpression());
-        }
-        return new ExtractionResult(left.getTupleDomain().intersect(right.getTupleDomain()), newRemainingExpression);
+        return !isPushdownFilterEnabled(session, tableHandle);
     }
 
     private String createTableLayoutString(
@@ -2067,24 +1922,6 @@ public class HiveMetadata
                 .add("filter", TRUE_CONSTANT.equals(remainingPredicate) ? null : rowExpressionService.formatRowExpression(session, remainingPredicate))
                 .add("domains", domainPredicate.isAll() ? null : domainPredicate.toString(session))
                 .toString();
-    }
-
-    private static Set<VariableReferenceExpression> extractAll(RowExpression expression)
-    {
-        ImmutableSet.Builder<VariableReferenceExpression> builder = ImmutableSet.builder();
-        expression.accept(new VariableReferenceBuilderVisitor(), builder);
-        return builder.build();
-    }
-
-    private static class VariableReferenceBuilderVisitor
-            extends DefaultRowExpressionTraversalVisitor<ImmutableSet.Builder<VariableReferenceExpression>>
-    {
-        @Override
-        public Void visitVariableReference(VariableReferenceExpression variable, ImmutableSet.Builder<VariableReferenceExpression> builder)
-        {
-            builder.add(variable);
-            return null;
-        }
     }
 
     @Override
@@ -2197,7 +2034,6 @@ public class HiveMetadata
         }
 
         TupleDomain<ColumnHandle> predicate;
-        Map<ColumnHandle, ConstantExpression> constants;
         if (hiveLayoutHandle.isPushdownFilterEnabled()) {
             predicate = hiveLayoutHandle.getDomainPredicate()
                     .transform(subfield -> isEntireColumn(subfield) ? subfield.getRootName() : null)
@@ -2419,6 +2255,39 @@ public class HiveMetadata
     }
 
     @Override
+    public Optional<ConnectorNewTableLayout> getPreferredShuffleLayoutForInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        HiveTableHandle hiveTableHandle = (HiveTableHandle) tableHandle;
+        SchemaTableName tableName = hiveTableHandle.getSchemaTableName();
+        Table table = metastore.getTable(tableName.getSchemaName(), tableName.getTableName())
+                .orElseThrow(() -> new TableNotFoundException(tableName));
+
+        Optional<HiveBucketHandle> hiveBucketHandle = getHiveBucketHandle(table);
+        if (hiveBucketHandle.isPresent()) {
+            // For bucketed table, table partitioning (i.e. the bucketing scheme) should be respected,
+            // and there is no additional preferred shuffle partitioning
+            return Optional.empty();
+        }
+
+        if (!isShufflePartitionedColumnsForTableWriteEnabled(session) || table.getPartitionColumns().isEmpty()) {
+            return Optional.empty();
+        }
+
+        // TODO: the shuffle partitioning could use a better hash function (instead of Hive bucket function)
+        HivePartitioningHandle partitioningHandle = new HivePartitioningHandle(
+                SHUFFLE_MAX_PARALLELISM_FOR_PARTITIONED_TABLE_WRITE,
+                table.getPartitionColumns().stream()
+                        .map(Column::getType)
+                        .collect(Collectors.toList()),
+                OptionalInt.empty());
+        List<String> partitionedBy = table.getPartitionColumns().stream()
+                .map(Column::getName)
+                .collect(Collectors.toList());
+
+        return Optional.of(new ConnectorNewTableLayout(partitioningHandle, partitionedBy));
+    }
+
+    @Override
     public Optional<ConnectorNewTableLayout> getNewTableLayout(ConnectorSession session, ConnectorTableMetadata tableMetadata)
     {
         validatePartitionColumns(tableMetadata);
@@ -2442,6 +2311,41 @@ public class HiveMetadata
                                 .collect(toList()),
                         OptionalInt.of(bucketProperty.get().getBucketCount())),
                 bucketedBy));
+    }
+
+    @Override
+    public Optional<ConnectorNewTableLayout> getPreferredShuffleLayoutForNewTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
+    {
+        validatePartitionColumns(tableMetadata);
+        validateBucketColumns(tableMetadata);
+        Optional<HiveBucketProperty> bucketProperty = getBucketProperty(tableMetadata.getProperties());
+        if (bucketProperty.isPresent()) {
+            // For bucketed table, table partitioning (i.e. the bucketing scheme) should be respected,
+            // and there is no additional preferred shuffle partitioning
+            return Optional.empty();
+        }
+
+        List<String> partitionedBy = getPartitionedBy(tableMetadata.getProperties());
+        if (!isShufflePartitionedColumnsForTableWriteEnabled(session) || partitionedBy.isEmpty()) {
+            return Optional.empty();
+        }
+
+        List<HiveColumnHandle> columnHandles = getColumnHandles(tableMetadata, ImmutableSet.copyOf(partitionedBy), typeTranslator);
+        Map<String, HiveColumnHandle> columnHandlesByName = Maps.uniqueIndex(columnHandles, HiveColumnHandle::getName);
+        List<Column> partitionColumns = partitionedBy.stream()
+                .map(columnHandlesByName::get)
+                .map(column -> new Column(column.getName(), column.getHiveType(), column.getComment()))
+                .collect(toList());
+
+        // TODO: the shuffle partitioning could use a better hash function (instead of Hive bucket function)
+        HivePartitioningHandle partitioningHandle = new HivePartitioningHandle(
+                SHUFFLE_MAX_PARALLELISM_FOR_PARTITIONED_TABLE_WRITE,
+                partitionColumns.stream()
+                        .map(Column::getType)
+                        .collect(Collectors.toList()),
+                OptionalInt.empty());
+
+        return Optional.of(new ConnectorNewTableLayout(partitioningHandle, partitionedBy));
     }
 
     @Override

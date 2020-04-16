@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.spi.block;
 
+import com.facebook.presto.spi.type.Type;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
@@ -24,8 +25,8 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
 
+import static com.facebook.presto.spi.block.DictionaryId.randomDictionaryId;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.spi.type.IntegerType.INTEGER;
 import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
 import static com.facebook.presto.spi.type.TinyintType.TINYINT;
@@ -62,20 +63,21 @@ public class TestBlockFlattenner
     public void testNestedDictionaryRLELongArray()
     {
         DictionaryBlock block = createTestDictionaryBlock(createTestRleBlock(createLongArrayBlock(4), 3));
-        assertFlatten(
-                block,
-                flattenedBlock -> {
-                    assertEquals(allocator.getBorrowedArrayCount(), 1);
+        assertFlattenNumericTypeBlock(BIGINT, block, 1, LongArrayBlock.class);
+    }
 
-                    assertEquals(flattenedBlock.getPositionCount(), block.getPositionCount());
-                    for (int i = 0; i < block.getPositionCount(); i++) {
-                        assertEquals(BIGINT.getLong(block, i), BIGINT.getLong(flattenedBlock, i));
-                    }
-                    assertEquals(flattenedBlock.getClass(), DictionaryBlock.class);
-                    DictionaryBlock decodedDictionary = (DictionaryBlock) flattenedBlock;
-                    assertEquals(decodedDictionary.getDictionary().getClass(), LongArrayBlock.class);
-                    assertEquals(1, decodedDictionary.getDictionary().getPositionCount());
-                });
+    @Test
+    public void testNestedDictionaryDictionaryLongArray()
+    {
+        DictionaryBlock block = createTestDictionaryBlock(createTestDictionaryBlock(createLongArrayBlock(1, 2, 3, 4, 5)));
+        assertFlattenNumericTypeBlock(BIGINT, block, 5, LongArrayBlock.class);
+    }
+
+    @Test
+    public void testNestedDictionaryRleDictionaryLongArray()
+    {
+        DictionaryBlock block = createTestDictionaryBlock(createTestRleBlock(createTestDictionaryBlock(createLongArrayBlock(1)), 5));
+        assertFlattenNumericTypeBlock(BIGINT, block, 1, LongArrayBlock.class);
     }
 
     @Test
@@ -92,20 +94,7 @@ public class TestBlockFlattenner
     public void testNestedDictionaryRLEIntArray()
     {
         DictionaryBlock block = createTestDictionaryBlock(createTestRleBlock(createIntArrayBlock(4), 3));
-        assertFlatten(
-                block,
-                flattenedBlock -> {
-                    assertEquals(allocator.getBorrowedArrayCount(), 1);
-
-                    assertEquals(flattenedBlock.getPositionCount(), block.getPositionCount());
-                    for (int i = 0; i < block.getPositionCount(); i++) {
-                        assertEquals(INTEGER.getLong(block, i), INTEGER.getLong(flattenedBlock, i));
-                    }
-                    assertEquals(flattenedBlock.getClass(), DictionaryBlock.class);
-                    DictionaryBlock decodedDictionary = (DictionaryBlock) flattenedBlock;
-                    assertEquals(decodedDictionary.getDictionary().getClass(), IntArrayBlock.class);
-                    assertEquals(1, decodedDictionary.getDictionary().getPositionCount());
-                });
+        assertFlattenNumericTypeBlock(INTEGER, block, 1, IntArrayBlock.class);
     }
 
     @Test
@@ -122,20 +111,7 @@ public class TestBlockFlattenner
     public void testNestedDictionaryRLEShortArray()
     {
         DictionaryBlock block = createTestDictionaryBlock(createTestRleBlock(createShortArrayBlock(4), 3));
-        assertFlatten(
-                block,
-                flattenedBlock -> {
-                    assertEquals(allocator.getBorrowedArrayCount(), 1);
-
-                    assertEquals(flattenedBlock.getPositionCount(), block.getPositionCount());
-                    for (int i = 0; i < block.getPositionCount(); i++) {
-                        assertEquals(SMALLINT.getLong(block, i), SMALLINT.getLong(flattenedBlock, i));
-                    }
-                    assertEquals(flattenedBlock.getClass(), DictionaryBlock.class);
-                    DictionaryBlock decodedDictionary = (DictionaryBlock) flattenedBlock;
-                    assertEquals(decodedDictionary.getDictionary().getClass(), ShortArrayBlock.class);
-                    assertEquals(1, decodedDictionary.getDictionary().getPositionCount());
-                });
+        assertFlattenNumericTypeBlock(SMALLINT, block, 1, ShortArrayBlock.class);
     }
 
     @Test
@@ -152,22 +128,7 @@ public class TestBlockFlattenner
     public void testNestedDictionaryRLEByteArray()
     {
         DictionaryBlock block = createTestDictionaryBlock(createTestRleBlock(createByteArrayBlock(4), 3));
-        assertFlatten(
-                block,
-                flattenedBlock -> {
-                    assertEquals(allocator.getBorrowedArrayCount(), 1);
-                    assertNotNull(flattenedBlock);
-
-                    assertEquals(flattenedBlock.getPositionCount(), block.getPositionCount());
-                    for (int i = 0; i < block.getPositionCount(); i++) {
-                        assertEquals(TINYINT.getLong(flattenedBlock, i), TINYINT.getLong(block, i));
-                        assertEquals(BOOLEAN.getBoolean(flattenedBlock, i), BOOLEAN.getBoolean(block, i));
-                    }
-                    assertEquals(flattenedBlock.getClass(), DictionaryBlock.class);
-                    DictionaryBlock decodedDictionary = (DictionaryBlock) flattenedBlock;
-                    assertEquals(decodedDictionary.getDictionary().getClass(), ByteArrayBlock.class);
-                    assertEquals(1, decodedDictionary.getDictionary().getPositionCount());
-                });
+        assertFlattenNumericTypeBlock(TINYINT, block, 1, ByteArrayBlock.class);
     }
 
     @Test
@@ -193,8 +154,8 @@ public class TestBlockFlattenner
         Block block = new DictionaryBlock(
                 new DictionaryBlock(
                         new DictionaryBlock(
-                            createLongArrayBlock(5, 6),
-                            new int[] {0, 1}),
+                                createLongArrayBlock(5, 6),
+                                new int[] {0, 1}),
                         new int[] {0, 1, 0, 0, 1}),
                 new int[] {0, 1, 0, 0, 1, 1, 0});
         assertFlatten(
@@ -258,6 +219,24 @@ public class TestBlockFlattenner
                 });
     }
 
+    private void assertFlattenNumericTypeBlock(Type type, Block block, int expectedPositionCount, Class expectedClass)
+    {
+        assertFlatten(
+                block,
+                flattenedBlock -> {
+                    assertEquals(allocator.getBorrowedArrayCount(), 1);
+
+                    assertEquals(flattenedBlock.getPositionCount(), block.getPositionCount());
+                    for (int i = 0; i < block.getPositionCount(); i++) {
+                        assertEquals(type.getLong(block, i), type.getLong(flattenedBlock, i));
+                    }
+                    assertEquals(flattenedBlock.getClass(), DictionaryBlock.class);
+                    DictionaryBlock decodedDictionary = (DictionaryBlock) flattenedBlock;
+                    assertEquals(decodedDictionary.getDictionary().getClass(), expectedClass);
+                    assertEquals(expectedPositionCount, decodedDictionary.getDictionary().getPositionCount());
+                });
+    }
+
     private void assertFlatten(Block block, Consumer<Block> blockConsumer)
     {
         assertEquals(allocator.getBorrowedArrayCount(), 0);
@@ -301,8 +280,9 @@ public class TestBlockFlattenner
 
     private static DictionaryBlock createTestDictionaryBlock(Block block)
     {
-        int[] dictionaryIndexes = createTestDictionaryIndexes(block.getPositionCount());
-        return new DictionaryBlock(dictionaryIndexes.length, block, dictionaryIndexes);
+        int idsOffset = ThreadLocalRandom.current().nextInt(block.getPositionCount()) + 1;
+        int[] dictionaryIndexes = createTestDictionaryIndexes(block.getPositionCount() + idsOffset);
+        return new DictionaryBlock(idsOffset, block.getPositionCount(), block, dictionaryIndexes, false, randomDictionaryId());
     }
 
     private static int[] createTestDictionaryIndexes(int valueCount)

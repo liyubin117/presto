@@ -62,9 +62,10 @@ public class TestFeaturesConfig
                 .setDynamicScheduleForGroupedExecutionEnabled(false)
                 .setRecoverableGroupedExecutionEnabled(false)
                 .setMaxFailedTaskPercentage(0.3)
+                .setMaxStageRetries(0)
                 .setConcurrentLifespansPerTask(0)
                 .setFastInequalityJoins(true)
-                .setColocatedJoinsEnabled(false)
+                .setColocatedJoinsEnabled(true)
                 .setSpatialJoinsEnabled(true)
                 .setJoinReorderingStrategy(ELIMINATE_CROSS_JOINS)
                 .setPartialMergePushdownStrategy(FeaturesConfig.PartialMergePushdownStrategy.NONE)
@@ -72,6 +73,7 @@ public class TestFeaturesConfig
                 .setRedistributeWrites(true)
                 .setScaleWriters(false)
                 .setWriterMinSize(new DataSize(32, MEGABYTE))
+                .setOptimizedScaleWriterProducerBuffer(false)
                 .setOptimizeMetadataQueries(false)
                 .setOptimizeHashGeneration(true)
                 .setPushTableWriteThroughUnion(true)
@@ -128,7 +130,8 @@ public class TestFeaturesConfig
                 .setOptimizedRepartitioningEnabled(false)
                 .setListBuiltInFunctionsOnly(true)
                 .setPartitioningPrecisionStrategy(PartitioningPrecisionStrategy.AUTOMATIC)
-                .setExperimentalFunctionsEnabled(false));
+                .setExperimentalFunctionsEnabled(false)
+                .setUseLegacyScheduler(true));
     }
 
     @Test
@@ -158,9 +161,10 @@ public class TestFeaturesConfig
                 .put("dynamic-schedule-for-grouped-execution", "true")
                 .put("recoverable-grouped-execution-enabled", "true")
                 .put("max-failed-task-percentage", "0.8")
+                .put("max-stage-retries", "10")
                 .put("concurrent-lifespans-per-task", "1")
                 .put("fast-inequality-joins", "false")
-                .put("colocated-joins-enabled", "true")
+                .put("colocated-joins-enabled", "false")
                 .put("spatial-joins-enabled", "false")
                 .put("optimizer.join-reordering-strategy", "NONE")
                 .put("experimental.optimizer.partial-merge-pushdown-strategy", PUSH_THROUGH_LOW_MEMORY_OPERATORS.name())
@@ -168,6 +172,7 @@ public class TestFeaturesConfig
                 .put("redistribute-writes", "false")
                 .put("scale-writers", "true")
                 .put("writer-min-size", "42GB")
+                .put("optimized-scale-writer-producer-buffer", "true")
                 .put("optimizer.optimize-metadata-queries", "true")
                 .put("optimizer.optimize-hash-generation", "false")
                 .put("optimizer.optimize-mixed-distinct-aggregations", "true")
@@ -213,6 +218,7 @@ public class TestFeaturesConfig
                 .put("list-built-in-functions-only", "false")
                 .put("partitioning-precision-strategy", "PREFER_EXACT_PARTITIONING")
                 .put("experimental-functions-enabled", "true")
+                .put("use-legacy-scheduler", "false")
                 .build();
 
         FeaturesConfig expected = new FeaturesConfig()
@@ -232,9 +238,10 @@ public class TestFeaturesConfig
                 .setDynamicScheduleForGroupedExecutionEnabled(true)
                 .setRecoverableGroupedExecutionEnabled(true)
                 .setMaxFailedTaskPercentage(0.8)
+                .setMaxStageRetries(10)
                 .setConcurrentLifespansPerTask(1)
                 .setFastInequalityJoins(false)
-                .setColocatedJoinsEnabled(true)
+                .setColocatedJoinsEnabled(false)
                 .setSpatialJoinsEnabled(false)
                 .setJoinReorderingStrategy(NONE)
                 .setPartialMergePushdownStrategy(PUSH_THROUGH_LOW_MEMORY_OPERATORS)
@@ -242,6 +249,7 @@ public class TestFeaturesConfig
                 .setRedistributeWrites(false)
                 .setScaleWriters(true)
                 .setWriterMinSize(new DataSize(42, GIGABYTE))
+                .setOptimizedScaleWriterProducerBuffer(true)
                 .setOptimizeMetadataQueries(true)
                 .setOptimizeHashGeneration(false)
                 .setOptimizeMixedDistinctAggregations(true)
@@ -293,7 +301,8 @@ public class TestFeaturesConfig
                 .setOptimizedRepartitioningEnabled(true)
                 .setListBuiltInFunctionsOnly(false)
                 .setPartitioningPrecisionStrategy(PartitioningPrecisionStrategy.PREFER_EXACT_PARTITIONING)
-                .setExperimentalFunctionsEnabled(true);
+                .setExperimentalFunctionsEnabled(true)
+                .setUseLegacyScheduler(false);
         assertFullMapping(properties, expected);
     }
 

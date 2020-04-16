@@ -18,7 +18,6 @@ import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorNewTableLayout;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
-import com.facebook.presto.spi.ConnectorPushdownFilterResult;
 import com.facebook.presto.spi.ConnectorResolvedIndex;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableHandle;
@@ -34,7 +33,6 @@ import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.api.Experimental;
 import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.security.GrantInfo;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.Privilege;
@@ -127,25 +125,13 @@ public interface ConnectorMetadata
     }
 
     /**
-     * Experimental: if true, the engine will invoke pushdownFilter instead of getTableLayouts.
-     *
-     * This interface can be replaced with a connector optimizer rule once the engine supports these (#12546).
+     * Experimental: if true, the engine will invoke getLayout otherwise, getLayout will not be called.
      */
+    @Deprecated
     @Experimental
-    default boolean isPushdownFilterSupported(ConnectorSession session, ConnectorTableHandle tableHandle)
+    default boolean isLegacyGetLayoutSupported(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        return false;
-    }
-
-    /**
-     * Experimental: returns table layout that encapsulates the given filter.
-     *
-     * This interface can be replaced with a connector optimizer rule once the engine supports these (#12546).
-     */
-    @Experimental
-    default ConnectorPushdownFilterResult pushdownFilter(ConnectorSession session, ConnectorTableHandle tableHandle, RowExpression filter, Optional<ConnectorTableLayoutHandle> currentLayoutHandle)
-    {
-        throw new UnsupportedOperationException();
+        return true;
     }
 
     /**
@@ -166,12 +152,12 @@ public interface ConnectorMetadata
      * <ul>
      * <li> n >= m </li>
      * <li> For every partition <code>b_i</code> in partitioning <code>b</code>,
-     *      the rows it contains is the same as union of a set of partitions <code>a_{i_1}, a_{i_2}, ... a_{i_k}</code>
-     *      in partitioning <code>a</code>, i.e.
-     *      <p>
-     *          <code>b_i = a_{i_1} + a_{i_2} + ... + a_{i_k}</code>
+     * the rows it contains is the same as union of a set of partitions <code>a_{i_1}, a_{i_2}, ... a_{i_k}</code>
+     * in partitioning <code>a</code>, i.e.
+     * <p>
+     * <code>b_i = a_{i_1} + a_{i_2} + ... + a_{i_k}</code>
      * <li> Connector can transparently convert partitioning <code>a</code> to partitioning <code>b</code>
-     *      associated with the provided table layout handle.
+     * associated with the provided table layout handle.
      * </ul>
      *
      * <p>
@@ -305,7 +291,7 @@ public interface ConnectorMetadata
      * Creates a temporary table with optional partitioning requirements.
      * Temporary table might have different default storage format, compression scheme, replication factor, etc,
      * and gets automatically dropped when the transaction ends.
-     *
+     * <p>
      * This SPI is unstable and subject to change in the future.
      */
     default ConnectorTableHandle createTemporaryTable(ConnectorSession session, List<ColumnMetadata> columns, Optional<ConnectorPartitioningMetadata> partitioningMetadata)
@@ -364,6 +350,19 @@ public interface ConnectorMetadata
     }
 
     /**
+     * A connector can have preferred shuffle layout for table write.
+     * For example, Hive connector might prefer to shuffle on partitioned columns for partitioned unbucketed table.
+     *
+     * @apiNote this method and {@link #getNewTableLayout} cannot both return non-empty table layout.
+     * @see #getPreferredShuffleLayoutForInsert
+     */
+    @Experimental
+    default Optional<ConnectorNewTableLayout> getPreferredShuffleLayoutForNewTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
+    {
+        return Optional.empty();
+    }
+
+    /**
      * Get the physical layout for a inserting into an existing table.
      */
     default Optional<ConnectorNewTableLayout> getInsertLayout(ConnectorSession session, ConnectorTableHandle tableHandle)
@@ -391,6 +390,19 @@ public interface ConnectorMetadata
                 .collect(toList());
 
         return Optional.of(new ConnectorNewTableLayout(partitioningHandle, partitionColumns));
+    }
+
+    /**
+     * A connector can have preferred shuffle layout for table write.
+     * For example, Hive connector might prefer to shuffle on partitioned columns for partitioned unbucketed table.
+     *
+     * @apiNote this method and {@link #getInsertLayout} cannot both return non-empty table layout.
+     * @see #getPreferredShuffleLayoutForNewTable
+     */
+    @Experimental
+    default Optional<ConnectorNewTableLayout> getPreferredShuffleLayoutForInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        return Optional.empty();
     }
 
     /**
@@ -499,7 +511,7 @@ public interface ConnectorMetadata
     /**
      * Create the specified view. The data for the view is opaque to the connector.
      */
-    default void createView(ConnectorSession session, SchemaTableName viewName, String viewData, boolean replace)
+    default void createView(ConnectorSession session, ConnectorTableMetadata viewMetadata, String viewData, boolean replace)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support creating views");
     }

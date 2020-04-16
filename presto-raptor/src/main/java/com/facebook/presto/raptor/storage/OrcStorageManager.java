@@ -14,9 +14,10 @@
 package com.facebook.presto.raptor.storage;
 
 import com.facebook.airlift.json.JsonCodec;
-import com.facebook.presto.memory.context.AggregatedMemoryContext;
+import com.facebook.presto.hive.HiveFileContext;
+import com.facebook.presto.orc.DataSink;
+import com.facebook.presto.orc.OrcAggregatedMemoryContext;
 import com.facebook.presto.orc.OrcBatchRecordReader;
-import com.facebook.presto.orc.OrcDataSink;
 import com.facebook.presto.orc.OrcDataSource;
 import com.facebook.presto.orc.OrcPredicate;
 import com.facebook.presto.orc.OrcReader;
@@ -31,6 +32,7 @@ import com.facebook.presto.orc.metadata.CompressionKind;
 import com.facebook.presto.orc.metadata.OrcType;
 import com.facebook.presto.raptor.RaptorColumnHandle;
 import com.facebook.presto.raptor.RaptorConnectorId;
+import com.facebook.presto.raptor.RaptorOrcAggregatedMemoryContext;
 import com.facebook.presto.raptor.backup.BackupManager;
 import com.facebook.presto.raptor.backup.BackupStore;
 import com.facebook.presto.raptor.filesystem.FileSystemContext;
@@ -91,7 +93,6 @@ import java.util.concurrent.TimeoutException;
 import static com.facebook.airlift.concurrent.MoreFutures.allAsList;
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.airlift.json.JsonCodec.jsonCodec;
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcReader.INITIAL_BATCH_SIZE;
 import static com.facebook.presto.raptor.RaptorColumnHandle.isBucketNumberColumn;
@@ -268,6 +269,7 @@ public class OrcStorageManager
     @Override
     public ConnectorPageSource getPageSource(
             FileSystemContext fileSystemContext,
+            HiveFileContext hiveFileContext,
             UUID shardUuid,
             Optional<UUID> deltaShardUuid,
             boolean tableSupportsDeltaDelete,
@@ -282,7 +284,7 @@ public class OrcStorageManager
         FileSystem fileSystem = orcDataEnvironment.getFileSystem(fileSystemContext);
         OrcDataSource dataSource = openShard(fileSystem, shardUuid, readerAttributes);
 
-        AggregatedMemoryContext systemMemoryUsage = newSimpleAggregatedMemoryContext();
+        OrcAggregatedMemoryContext systemMemoryUsage = new RaptorOrcAggregatedMemoryContext();
 
         try {
             OrcReader reader = new OrcReader(
@@ -290,7 +292,9 @@ public class OrcStorageManager
                     ORC,
                     orcFileTailSource,
                     stripeMetadataSource,
-                    new OrcReaderOptions(readerAttributes.getMaxMergeDistance(), readerAttributes.getTinyStripeThreshold(), HUGE_MAX_READ_BLOCK_SIZE, readerAttributes.isZstdJniDecompressionEnabled()));
+                    new RaptorOrcAggregatedMemoryContext(),
+                    new OrcReaderOptions(readerAttributes.getMaxMergeDistance(), readerAttributes.getTinyStripeThreshold(), HUGE_MAX_READ_BLOCK_SIZE, readerAttributes.isZstdJniDecompressionEnabled()),
+                    hiveFileContext.isCacheable());
 
             Map<Long, Integer> indexMap = columnIdIndex(reader.getColumnNames());
             ImmutableMap.Builder<Integer, Type> includedColumns = ImmutableMap.builder();
@@ -316,7 +320,12 @@ public class OrcStorageManager
 
             StorageTypeConverter storageTypeConverter = new StorageTypeConverter(typeManager);
 
-            OrcBatchRecordReader recordReader = reader.createBatchRecordReader(storageTypeConverter.toStorageTypes(includedColumns.build()), predicate, DEFAULT_STORAGE_TIMEZONE, systemMemoryUsage, INITIAL_BATCH_SIZE);
+            OrcBatchRecordReader recordReader = reader.createBatchRecordReader(
+                    storageTypeConverter.toStorageTypes(includedColumns.build()),
+                    predicate,
+                    DEFAULT_STORAGE_TIMEZONE,
+                    systemMemoryUsage,
+                    INITIAL_BATCH_SIZE);
 
             Optional<ShardRewriter> shardRewriter = Optional.empty();
             if (transactionId.isPresent()) {
@@ -366,17 +375,19 @@ public class OrcStorageManager
         }
 
         try (OrcDataSource dataSource = openShard(fileSystem, deltaShardUuid.get(), defaultReaderAttributes)) {
-            AggregatedMemoryContext systemMemoryUsage = newSimpleAggregatedMemoryContext();
+            OrcAggregatedMemoryContext systemMemoryUsage = new RaptorOrcAggregatedMemoryContext();
             OrcReader reader = new OrcReader(
                     dataSource,
                     ORC,
                     orcFileTailSource,
                     new StorageStripeMetadataSource(),
+                    new RaptorOrcAggregatedMemoryContext(),
                     new OrcReaderOptions(
                             defaultReaderAttributes.getMaxMergeDistance(),
                             defaultReaderAttributes.getTinyStripeThreshold(),
                             HUGE_MAX_READ_BLOCK_SIZE,
-                            defaultReaderAttributes.isZstdJniDecompressionEnabled()));
+                            defaultReaderAttributes.isZstdJniDecompressionEnabled()),
+                    false);
 
             if (reader.getFooter().getNumberOfRows() >= Integer.MAX_VALUE) {
                 throw new IOException("File has too many rows");
@@ -537,7 +548,9 @@ public class OrcStorageManager
                     ORC,
                     orcFileTailSource,
                     stripeMetadataSource,
-                    new OrcReaderOptions(defaultReaderAttributes.getMaxMergeDistance(), defaultReaderAttributes.getTinyStripeThreshold(), HUGE_MAX_READ_BLOCK_SIZE, defaultReaderAttributes.isZstdJniDecompressionEnabled()));
+                    new RaptorOrcAggregatedMemoryContext(),
+                    new OrcReaderOptions(defaultReaderAttributes.getMaxMergeDistance(), defaultReaderAttributes.getTinyStripeThreshold(), HUGE_MAX_READ_BLOCK_SIZE, defaultReaderAttributes.isZstdJniDecompressionEnabled()),
+                    false);
 
             ImmutableList.Builder<ColumnStats> list = ImmutableList.builder();
             for (ColumnInfo info : getColumnInfo(reader)) {
@@ -828,7 +841,7 @@ public class OrcStorageManager
                 Path stagingFile = storageService.getStagingFile(shardUuid);
                 storageService.createParents(stagingFile);
                 stagingFiles.add(stagingFile);
-                OrcDataSink sink;
+                DataSink sink;
                 try {
                     sink = orcDataEnvironment.createOrcDataSink(fileSystem, stagingFile);
                 }

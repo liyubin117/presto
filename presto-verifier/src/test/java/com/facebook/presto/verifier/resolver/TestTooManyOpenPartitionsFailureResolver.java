@@ -20,6 +20,9 @@ import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.Statement;
+import com.facebook.presto.verifier.TestingResultSetMetaData;
+import com.facebook.presto.verifier.TestingResultSetMetaData.ColumnInfo;
+import com.facebook.presto.verifier.framework.PrestoQueryException;
 import com.facebook.presto.verifier.framework.QueryBundle;
 import com.facebook.presto.verifier.framework.QueryException;
 import com.facebook.presto.verifier.framework.QueryResult;
@@ -33,6 +36,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_TOO_MANY_OPEN_PARTITIONS;
+import static com.facebook.presto.spi.type.StandardTypes.VARCHAR;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.AT_SIGN;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.COLON;
 import static com.facebook.presto.sql.parser.ParsingOptions.DecimalLiteralTreatment.AS_DOUBLE;
@@ -69,7 +73,7 @@ public class TestTooManyOpenPartitionsFailureResolver
         {
             return new QueryResult(
                     ImmutableList.of(createTable.get()),
-                    ImmutableList.of("Create Table"),
+                    new TestingResultSetMetaData(ImmutableList.of(new ColumnInfo("Create Table", VARCHAR))),
                     createQueryStats(0, 0));
         }
     }
@@ -84,12 +88,12 @@ public class TestTooManyOpenPartitionsFailureResolver
                     ParsingOptions.builder().setDecimalLiteralTreatment(AS_DOUBLE).build()),
             ImmutableList.of(),
             TEST);
-    private static final QueryException HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION = QueryException.forPresto(
+    private static final QueryException HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION = new PrestoQueryException(
             new RuntimeException(),
-            Optional.of(HIVE_TOO_MANY_OPEN_PARTITIONS),
             false,
-            Optional.of(createQueryStats(0, 0)),
-            TEST_MAIN);
+            TEST_MAIN,
+            Optional.of(HIVE_TOO_MANY_OPEN_PARTITIONS),
+            Optional.of(createQueryStats(0, 0)));
 
     private static final AtomicReference<String> createTable = new AtomicReference<>();
 
@@ -125,6 +129,6 @@ public class TestTooManyOpenPartitionsFailureResolver
         getFailureResolver().resolve(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE));
         assertEquals(
                 getFailureResolver().resolve(CONTROL_QUERY_STATS, HIVE_TOO_MANY_OPEN_PARTITIONS_EXCEPTION, Optional.of(TEST_BUNDLE)),
-                Optional.of("Auto Resolved: No enough worker on test cluster"));
+                Optional.of("Not enough workers on test cluster"));
     }
 }

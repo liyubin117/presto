@@ -53,7 +53,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcTester.HIVE_STORAGE_TIME_ZONE;
 import static com.facebook.presto.orc.TestMapFlatBatchStreamReader.ExpectedValuesBuilder.Frequency.ALL;
 import static com.facebook.presto.orc.TestMapFlatBatchStreamReader.ExpectedValuesBuilder.Frequency.NONE;
@@ -398,14 +398,21 @@ public class TestMapFlatBatchStreamReader
                 OrcEncoding.DWRF,
                 new StorageOrcFileTailSource(),
                 new StorageStripeMetadataSource(),
-                OrcReaderTestingUtils.createDefaultTestConfig());
+                NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
+                OrcReaderTestingUtils.createDefaultTestConfig(),
+                false);
         Type mapType = TYPE_MANAGER.getParameterizedType(
                 StandardTypes.MAP,
                 ImmutableList.of(
                         TypeSignatureParameter.of(keyType.getTypeSignature()),
                         TypeSignatureParameter.of(valueType.getTypeSignature())));
 
-        try (OrcBatchRecordReader recordReader = orcReader.createBatchRecordReader(ImmutableMap.of(0, mapType), createOrcPredicate(0, mapType, expectedValues, OrcTester.Format.DWRF, true), HIVE_STORAGE_TIME_ZONE, newSimpleAggregatedMemoryContext(), 1024)) {
+        try (OrcBatchRecordReader recordReader = orcReader.createBatchRecordReader(
+                ImmutableMap.of(0, mapType),
+                createOrcPredicate(0, mapType, expectedValues, OrcTester.Format.DWRF, true),
+                HIVE_STORAGE_TIME_ZONE,
+                new TestingHiveOrcAggregatedMemoryContext(),
+                1024)) {
             Iterator<?> expectedValuesIterator = expectedValues.iterator();
 
             boolean isFirst = true;

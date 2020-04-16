@@ -25,6 +25,7 @@ import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordPageSource;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.SplitContext;
 import com.facebook.presto.spi.Subfield;
 import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
@@ -109,7 +110,13 @@ public class HivePageSourceProvider
     }
 
     @Override
-    public ConnectorPageSource createPageSource(ConnectorTransactionHandle transaction, ConnectorSession session, ConnectorSplit split, ConnectorTableLayoutHandle layout, List<ColumnHandle> columns)
+    public ConnectorPageSource createPageSource(
+            ConnectorTransactionHandle transaction,
+            ConnectorSession session,
+            ConnectorSplit split,
+            ConnectorTableLayoutHandle layout,
+            List<ColumnHandle> columns,
+            SplitContext splitContext)
     {
         HiveTableLayoutHandle hiveLayout = (HiveTableLayoutHandle) layout;
 
@@ -123,7 +130,17 @@ public class HivePageSourceProvider
         Configuration configuration = hdfsEnvironment.getConfiguration(new HdfsContext(session, hiveSplit.getDatabase(), hiveSplit.getTable()), path);
 
         if (hiveLayout.isPushdownFilterEnabled()) {
-            Optional<ConnectorPageSource> selectivePageSource = createSelectivePageSource(selectivePageSourceFactories, configuration, session, hiveSplit, hiveLayout, selectedColumns, hiveStorageTimeZone, typeManager, optimizedRowExpressionCache);
+            Optional<ConnectorPageSource> selectivePageSource = createSelectivePageSource(
+                    selectivePageSourceFactories,
+                    configuration,
+                    session,
+                    hiveSplit,
+                    hiveLayout,
+                    selectedColumns,
+                    hiveStorageTimeZone,
+                    typeManager,
+                    optimizedRowExpressionCache,
+                    splitContext);
             if (selectivePageSource.isPresent()) {
                 return selectivePageSource.get();
             }
@@ -156,7 +173,7 @@ public class HivePageSourceProvider
                 hiveSplit.getPartitionSchemaDifference(),
                 hiveSplit.getBucketConversion(),
                 hiveSplit.isS3SelectPushdownEnabled(),
-                hiveSplit.getExtraFileInfo(),
+                new HiveFileContext(splitContext.isCacheable(), hiveSplit.getExtraFileInfo().map(BinaryExtraHiveFileInfo::new)),
                 hiveLayout.getRemainingPredicate(),
                 hiveLayout.isPushdownFilterEnabled(),
                 rowExpressionService);
@@ -175,7 +192,8 @@ public class HivePageSourceProvider
             List<HiveColumnHandle> columns,
             DateTimeZone hiveStorageTimeZone,
             TypeManager typeManager,
-            LoadingCache<RowExpressionCacheKey, RowExpression> rowExpressionCache)
+            LoadingCache<RowExpressionCacheKey, RowExpression> rowExpressionCache,
+            SplitContext splitContext)
     {
         Set<HiveColumnHandle> interimColumns = ImmutableSet.<HiveColumnHandle>builder()
                 .addAll(layout.getPredicateColumns().values())
@@ -233,7 +251,7 @@ public class HivePageSourceProvider
                     layout.getDomainPredicate(),
                     optimizedRemainingPredicate,
                     hiveStorageTimeZone,
-                    split.getExtraFileInfo());
+                    new HiveFileContext(splitContext.isCacheable(), split.getExtraFileInfo().map(BinaryExtraHiveFileInfo::new)));
             if (pageSource.isPresent()) {
                 return Optional.of(pageSource.get());
             }
@@ -267,7 +285,7 @@ public class HivePageSourceProvider
             Map<Integer, Column> partitionSchemaDifference,
             Optional<BucketConversion> bucketConversion,
             boolean s3SelectPushdownEnabled,
-            Optional<byte[]> extraFileInfo,
+            HiveFileContext hiveFileContext,
             RowExpression remainingPredicate,
             boolean isPushdownFilterEnabled,
             RowExpressionService rowExpressionService)
@@ -318,7 +336,7 @@ public class HivePageSourceProvider
                     toColumnHandles(regularAndInterimColumnMappings, true),
                     effectivePredicate,
                     hiveStorageTimeZone,
-                    extraFileInfo);
+                    hiveFileContext);
             if (pageSource.isPresent()) {
                 HivePageSource hivePageSource = new HivePageSource(
                         columnMappings,
